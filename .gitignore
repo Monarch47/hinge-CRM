@@ -1,0 +1,19 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Captured device data — NEVER commit real people's profile data.
+# Screenshots and UI dumps are transient working files only.
+*.png
+ui*.xml
+dump_*.xml
+prof_*.png
+hinge_*.png
+/captures/
+/scratch/
+
+# Local, private outreach data (should never be shared)
+hinge-log.data.json
+
+# OS
+.DS_Store

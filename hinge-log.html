@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hinge outreach log</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#171a21; --line:#262b36; --text:#e6e9ef; --muted:#8b93a4;
+    --accent:#7c5cff; --good:#31c48d; --warn:#f0a33e; --bad:#f26d6d;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f6f7f9; --card:#fff; --line:#e6e8ee; --text:#1a1d24; --muted:#6b7280; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text)}
+  header{padding:18px 22px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+  h1{font-size:16px;margin:0;font-weight:650}
+  .sub{color:var(--muted);font-size:12px}
+  .stats{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
+  .pill{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:4px 10px;font-size:12px;color:var(--muted)}
+  .pill b{color:var(--text)}
+  .wrap{padding:16px 22px}
+  .bar{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+  input[type=search]{background:var(--card);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;min-width:220px}
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px}
+  table{border-collapse:collapse;width:100%;min-width:900px;background:var(--card)}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{position:sticky;top:0;background:var(--card);font-size:12px;color:var(--muted);font-weight:600;z-index:1}
+  tr:last-child td{border-bottom:0}
+  td.msg{max-width:340px;white-space:pre-wrap}
+  td.field{max-width:220px;color:var(--muted)}
+  select{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:5px 8px;font:inherit}
+  .st-matched{color:var(--good)} .st-talking{color:var(--good)} .st-date{color:var(--accent)}
+  .st-replied{color:var(--warn)} .st-ghosted,.st-passed{color:var(--bad)}
+  [contenteditable]{outline:none;min-height:18px}
+  [contenteditable]:focus{box-shadow:0 0 0 2px var(--accent) inset;border-radius:4px}
+  .empty{padding:40px;text-align:center;color:var(--muted)}
+  .note{color:var(--muted);font-size:12px;margin-top:14px;line-height:1.6}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Hinge outreach log</h1>
+    <div class="sub">Your own activity — who you reached out to, what you sent, how it went. Local file, never uploaded.</div>
+  </div>
+  <div class="stats" id="stats"></div>
+</header>
+
+<div class="wrap">
+  <div class="bar">
+    <input type="search" id="q" placeholder="Filter by name, message, field…">
+    <span class="sub" id="count"></span>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th><th>Date</th><th>Name</th><th>Age</th>
+          <th>Hooked on</th><th>Message sent</th><th>Status</th><th>Notes</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div class="note">
+    Status & Notes are editable — click and type; edits save in this browser (localStorage) and survive new entries.
+    New rows are appended by the agent between the markers below. First names only by design; no photos stored.
+  </div>
+</div>
+
+<script>
+// ==== DATA (agent appends objects between the markers; keep the markers intact) ====
+const ROWS = [
+/*ROWS_START*/
+/*ROWS_END*/
+];
+// {id, date, name, age, field, message, status, notes}
+
+const STATUSES = ["sent","replied","matched","talking","date","ghosted","passed"];
+const store = {
+  get:(id)=>{ try{return JSON.parse(localStorage.getItem("hlog:"+id))||{}}catch(_){return {}} },
+  set:(id,patch)=>{ const cur=store.get(id); localStorage.setItem("hlog:"+id, JSON.stringify({...cur,...patch})); }
+};
+const esc = s => (s??"").toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function render(filter=""){
+  const tbody = document.getElementById("rows");
+  tbody.innerHTML = "";
+  const f = filter.trim().toLowerCase();
+  const counts = {}; STATUSES.forEach(s=>counts[s]=0);
+  let shown = 0;
+  ROWS.forEach((r,i)=>{
+    const ov = store.get(r.id);
+    const status = ov.status ?? r.status ?? "sent";
+    const notes  = ov.notes  ?? r.notes  ?? "";
+    counts[status] = (counts[status]||0)+1;
+    const hay = [r.name,r.message,r.field,notes].join(" ").toLowerCase();
+    if(f && !hay.includes(f)) return;
+    shown++;
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${i+1}</td>`+
+      `<td>${esc(r.date)}</td>`+
+      `<td>${esc(r.name)}</td>`+
+      `<td>${esc(r.age)}</td>`+
+      `<td class="field">${esc(r.field)}</td>`+
+      `<td class="msg">${esc(r.message)}</td>`+
+      `<td><select data-id="${r.id}" class="st-${status}">`+
+        STATUSES.map(s=>`<option value="${s}"${s===status?" selected":""}>${s}</option>`).join("")+
+      `</select></td>`+
+      `<td contenteditable data-id="${r.id}">${esc(notes)}</td>`;
+    tbody.appendChild(tr);
+  });
+  if(!shown){ tbody.innerHTML = `<tr><td colspan="8" class="empty">${ROWS.length? "No matches." : "No entries yet — the agent appends a row each time you send an opener."}</td></tr>`; }
+  document.getElementById("count").textContent = `${shown} shown / ${ROWS.length} total`;
+  const stats = document.getElementById("stats");
+  stats.innerHTML = `<span class="pill">Total <b>${ROWS.length}</b></span>` +
+    ["matched","talking","date","replied","ghosted"].map(s=>`<span class="pill">${s} <b>${counts[s]||0}</b></span>`).join("");
+}
+
+document.addEventListener("change", e=>{
+  const sel = e.target.closest("select[data-id]");
+  if(sel){ store.set(sel.dataset.id,{status:sel.value}); render(document.getElementById("q").value); }
+});
+document.addEventListener("input", e=>{
+  const cell = e.target.closest('[contenteditable][data-id]');
+  if(cell) store.set(cell.dataset.id,{notes:cell.textContent});
+});
+document.getElementById("q").addEventListener("input", e=>render(e.target.value));
+render();
+</script>
+</body>
+</html>
