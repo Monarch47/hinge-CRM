@@ -44,5 +44,5 @@ npm run like -- 5
 - An Android phone with **USB debugging** enabled
 
 ## Responsible use
-
+<img width="1030" height="639" alt="image" src="https://github.com/user-attachments/assets/1365b14d-33bf-4f6e-ab35-3ca033bb43af" />
 This automates *your own account* and interacts with *real people*. Keep sends human-approved, keep volume modest, don't try to deceive people at scale, and remember the person on the other end is real. Automating the app is against Hinge's ToS — you accept that risk. Don't publish this repo with any captured profile data in it (the `.gitignore` is set up to keep that out).
