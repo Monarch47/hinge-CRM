@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "description": "Personal-use Hinge co-pilot: ADB-driven like tool, a reply persona, and a local outreach log. Human-approved sends only.",
-  "bin": { "hinge-liker": "hinge-liker.js" },
+  "bin": { "hinge-liker": "hinge-liker.js", "hinge-opener": "hinge-opener.js" },
   "scripts": {
     "like": "node hinge-liker.js",
-    "dry": "DRY_RUN=1 node hinge-liker.js 1"
+    "dry": "DRY_RUN=1 node hinge-liker.js 1",
+    "open": "node hinge-opener.js",
+    "open:dry": "DRY_RUN=1 node hinge-opener.js"
   },
   "engines": { "node": ">=18" },
   "license": "UNLICENSED"

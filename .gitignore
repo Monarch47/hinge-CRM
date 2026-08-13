@@ -11,6 +11,7 @@ prof_*.png
 hinge_*.png
 /captures/
 /scratch/
+/screenshots/
 
 # Local, private outreach data (should never be shared)
 hinge-log.data.json
