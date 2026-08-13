@@ -24,9 +24,10 @@
  *   SKIP_MIN   like this many then pass one, low end   (default 1)
  *   SKIP_MAX   ...high end                             (default 4)
  *   DRY_RUN=1  self-test: sends nothing
+ *   NO_LOCK=1  leave the screen on at exit (default: put it to sleep / lock)
  *   LOAD_TIMEOUT  ms to wait for a screen to load, for lag/slow net (default 12000)
  *   SHOTS_DIR  folder for send-sheet screenshots  (default screenshots/)
- *   ADB        path to adb                 (default /opt/homebrew/bin/adb)
+ *   ADB        path to adb                 (default: auto-detect via $PATH + common spots)
  *   SERIAL     adb -s target               (default: first authorized device)
  */
 'use strict';
@@ -34,7 +35,21 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const ADB     = process.env.ADB || '/opt/homebrew/bin/adb';
+// Find adb without a hardcoded path: $ADB wins, then $PATH, then known spots.
+function findAdb() {
+  const home = process.env.HOME || '';
+  const candidates = [
+    ...(process.env.PATH || '').split(path.delimiter).map(d => path.join(d, 'adb')),
+    '/opt/homebrew/bin/adb',
+    path.join(home, '.nexustools/adb'),
+    path.join(home, 'Library/Android/sdk/platform-tools/adb'),
+  ];
+  for (const c of candidates) {
+    try { fs.accessSync(c, fs.constants.X_OK); return c; } catch (_) {}
+  }
+  return 'adb';                 // last resort — spawn fails with a readable name
+}
+const ADB     = process.env.ADB || findAdb();
 let   TARGET  = process.env.SERIAL || '';         // resolved to a real device in main()
 // No cap by default — runs until Hinge runs out of profiles/likes. Pass a count
 // (CLI arg or NUM_LIKES) to cap it.
@@ -53,13 +68,22 @@ const SHOTS_DIR = process.env.SHOTS_DIR || 'screenshots';
 
 // --- the openers (a random one is used per profile) -----------------------
 const LINES = [
+  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
+  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
+  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
+  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
+  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
+  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
+  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
+  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
+  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
+  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
   "I'm so sure you are in a happy secure relationship but idk how to prove it",
   "So I'm actually from the future where we have been married for 20 years. I came back to settle an argument over when and where our first date was.",
   "I lost my watch at a party once. An hour later saw some guy stepping on it while he was harassing some woman at that party. Infuriated, I immediately went over, punched him and broke his nose. No one does that to a woman, not on my watch",
   "Oohhh, r u calling me unnecessarily sensitive?",
   "You're so confident in your work, regardless of the results",
   "My favourite things are eating my family and not using commas 🤭",
-
   // generic / absurd
   "Okay but what's your excuse for being this suspiciously attractive?",
   "I was gonna come up with a clever opener but then I remembered I'm naturally this charming",
@@ -78,7 +102,24 @@ const LINES = [
   "I can't tell if you're a green flag or just really good at marketing",
   "You have the exact energy of someone who says 'trust me' right before things get interesting",
   "I feel like I'd have to meet you twice just to figure out what's going on here",
-
+  "Okay, I have a theory about you. Unfortunately I need more evidence.",
+  "You seem like a decision I'd make without consulting anyone.",
+  "I was gonna scroll past peacefully but apparently that's not happening.",
+  "Okay this is either a very good idea or a very entertaining mistake.",
+  "I feel like you have at least one completely unnecessary talent.",
+  "You look like you have stories that start with 'don't judge me'.",
+  "I have a feeling you're significantly more chaotic than your profile is admitting.",
+  "I'm not saying you're trouble. I'm saying the evidence is concerning.",
+  "You seem suspiciously capable of turning a normal plan into a story.",
+  "I don't trust people who look this innocent. Too much potential for plot twists.",
+  "Okay, before anything else, what's the weirdest thing I should know about you?",
+  "You have approximately 30 seconds to convince me this match wasn't a terrible idea.",
+  "I feel like there's a very specific reason you ended up on my screen today.",
+  "Not to be dramatic but I feel like Hinge just handed me a side quest.",
+  "I have no evidence whatsoever, but I already don't trust you.",
+  "You seem like someone who'd make 'let's just go for coffee' unnecessarily complicated.",
+  "I'm getting strong 'this was supposed to be a quick conversation' energy.",
+  "Okay wait. You seem like trouble, but the academically interesting kind.",
   // Hinglish
   "Oye, itni casually interesting kaise ho?",
   "Aapke profile mein thoda zyada hi potential dikh raha hai, suspicious hai",
@@ -105,7 +146,19 @@ const LINES = [
   "Tumse baat karne ka mann kar raha hai, which is mildly inconvenient",
   "Tumhari profile mein kuch toh gadbad hai. Mujhe investigate karna padega.",
   "Ohooo, confidence toh dekho. Respectfully, dangerous.",
-
+  "Mujhe lag raha hai tum normal dikhne ka bas natak kar rahi ho.",
+  "Accha, toh tumhari profile itni casually dangerous kyun hai?",
+  "Ek minute, tum actually interesting ho ya Hinge ka algorithm mujhe manipulate kar raha hai?",
+  "Tumhari profile dekh ke ek hi sawaal aaya — kitna chaos hai andar?",
+  "Oye, tumhari profile suspiciously achhi hai. Kuch toh scam hai.",
+  "Main bas profile dekh raha tha, phir laga chalo ek unnecessary decision aur le lete hain.",
+  "Tumse match hona coincidence tha ya Hinge finally meri side pe hai?",
+  "Accha batao, tum real life mein bhi itni problematic ho ya ye sirf marketing hai?",
+  "Tumhari profile ne mujhe ek theory di hai. Ab prove karna padega ki main galat hoon.",
+  "Aapko dekh ke lag raha hai conversation boring hone wali toh bilkul nahi hai.",
+  "Oye, ek baat batao — tum naturally itni questionable ho ya practice ki hai?",
+  "Thoda suspicious match hai ye. Main investigation start kar raha hoon.",
+  "Mujhe lag raha hai tumhare saath 'normal conversation' ek unrealistic expectation hai.",
   // playful / cocky
   "I can already tell you're going to be difficult. Fortunately, I enjoy unnecessary challenges.",
   "You seem like someone who would challenge me just for entertainment",
@@ -122,7 +175,6 @@ const LINES = [
   "You look like you'd have an unnecessarily strong opinion about something completely irrelevant",
   "I'm willing to hear your defence before making any accusations",
   "This feels like the beginning of a very questionable decision",
-
   // intentionally dumb
   "Important: if we get married, who gets custody of the aux?",
   "Quick compatibility test: fries are they a side or a main?",
@@ -132,7 +184,6 @@ const LINES = [
   "Very important: are you funny naturally or do you just have good friends?",
   "Would you rather have unlimited coffee or unlimited plane tickets? Choose carefully, this determines everything.",
   "I have absolutely no reason to ask this, but what's your most defendable red flag?",
-
   // slightly flirty
   "You're making a very strong case for me being right about my type",
   "I was prepared to be unimpressed and then you had to go and be interesting",
@@ -162,6 +213,9 @@ function adb(args, wantOut = false, timeoutMs = 0) {
 }
 // Wake the screen if it dozed off during a gap (no-op if already awake).
 const wake = () => { try { adb(['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP']); } catch (_) {} };
+// Put the screen to sleep (locks the phone if a lock screen is set). SLEEP is a
+// no-op when already asleep — POWER would toggle it back on.
+const sleepScreen = () => { try { adb(['shell', 'input', 'keyevent', 'KEYCODE_SLEEP']); } catch (_) {} };
 const tap = (x, y) => adb(['shell', 'input', 'tap', `${Math.round(x)}`, `${Math.round(y)}`]);
 const back = () => adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK']);
 const swipe = (x1, y1, x2, y2, d = 400) =>
@@ -342,4 +396,10 @@ async function main() {
 
   log(`Done. sent=${sent} passed=${passed} errors=${errors}${DRY_RUN ? ' (dry run)' : ''}`);
 }
-main().catch(e => { console.error('Fatal:', e.message); process.exit(1); });
+main()
+  .catch(e => { console.error('Fatal:', e.message); process.exitCode = 1; })   // no process.exit — let the lock below run
+  .finally(() => {
+    if (process.env.NO_LOCK === '1') return;
+    log('locking screen');
+    sleepScreen();
+  });

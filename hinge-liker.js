@@ -13,7 +13,7 @@
  *   MIN_GAP     min seconds between profiles       (default 9)
  *   MAX_GAP     max seconds between profiles       (default 22)
  *   DRY_RUN=1   locate the buttons, open ONE send sheet, back out, send nothing
- *   ADB         path to adb                         (default /opt/homebrew/bin/adb)
+ *   ADB         path to adb                         (default: auto-detect via $PATH + common spots)
  *
  * Safety:
  *   - NEVER taps the Rose (limited premium currency).
@@ -23,8 +23,24 @@
  */
 'use strict';
 const { execFileSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
-const ADB     = process.env.ADB || '/opt/homebrew/bin/adb';
+// Find adb without a hardcoded path: $ADB wins, then $PATH, then known spots.
+function findAdb() {
+  const home = process.env.HOME || '';
+  const candidates = [
+    ...(process.env.PATH || '').split(path.delimiter).map(d => path.join(d, 'adb')),
+    '/opt/homebrew/bin/adb',
+    path.join(home, '.nexustools/adb'),
+    path.join(home, 'Library/Android/sdk/platform-tools/adb'),
+  ];
+  for (const c of candidates) {
+    try { fs.accessSync(c, fs.constants.X_OK); return c; } catch (_) {}
+  }
+  return 'adb';                 // last resort — spawn fails with a readable name
+}
+const ADB     = process.env.ADB || findAdb();
 const NUM     = parseInt(process.argv[2] || process.env.NUM_LIKES || '5', 10);
 const MIN_GAP = parseFloat(process.env.MIN_GAP || '9');
 const MAX_GAP = parseFloat(process.env.MAX_GAP || '22');
