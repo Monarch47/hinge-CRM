@@ -23,8 +23,14 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://registry.npmjs.org
+
+      # OIDC trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.
+      - name: Update npm
+        run: |
+          npm install -g npm@latest
+          npm --version
 
       # A release tagged v1.3.0 that ships package.json 1.2.1 is the classic
       # way to publish the wrong thing. Refuse instead.
@@ -54,6 +60,10 @@ jobs:
       - name: Package safety check
         run: node scripts/check-package.js
 
+      # Authenticates over OIDC via the trusted publisher configured on npm
+      # (Package settings -> Trusted Publisher: this repo, this filename), so
+      # there is no token to leak or rotate and provenance is automatic.
+      # Falls back to an NPM_TOKEN secret if one is set and OIDC is not.
       - name: Publish
         if: github.event_name == 'release' || inputs.dry_run == false
         run: npm publish --provenance --access public
