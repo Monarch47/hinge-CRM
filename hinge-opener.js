@@ -259,10 +259,12 @@ function typeViaAdbKeyboard(text) {
   if (prev && !/adbkeyboard/.test(prev)) adb(['shell', 'ime', 'set', prev]);
 }
 function typeViaInputText(text) {
-  // Separate args (no device-shell quoting). Spaces → %s, literal % → %%.
+  // Separate argv (no host-shell quoting). Spaces → %s, literal % → %%.
+  // Apostrophes still need \-escaping: `adb shell` joins args into a
+  // device-side /system/bin/sh command, so a raw ' is "no closing quote".
   const CHUNK = 90;
   for (let i = 0; i < text.length; i += CHUNK) {
-    const piece = text.slice(i, i + CHUNK).replace(/%/g, '%%').replace(/ /g, '%s');
+    const piece = text.slice(i, i + CHUNK).replace(/%/g, '%%').replace(/ /g, '%s').replace(/'/g, "\\'");
     adb(['shell', 'input', 'text', piece]);
   }
 }

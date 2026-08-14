@@ -1,7 +1,7 @@
 # Node
 node_modules/
 npm-debug.log*
-
+.env
 # Captured device data — NEVER commit real people's profile data.
 # Screenshots and UI dumps are transient working files only.
 *.png
@@ -20,3 +20,4 @@ hinge-log.data.json
 
 # OS
 .DS_Store
+.cursor/
