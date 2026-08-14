@@ -1,12 +1,15 @@
 {
   "name": "tazer-hinge-copilot",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "Personal-use Hinge co-pilot: ADB-driven like tool, a reply persona, and a local outreach log. Human-approved sends only.",
-  "bin": { "hinge-liker": "hinge-liker.js", "hinge-opener": "hinge-opener.js" },
+  "description": "Personal-use Hinge co-pilot: scrape a profile, draft a like-comment, send it, log it, lock the phone.",
+  "bin": { "hinge": "hinge.js", "hinge-liker": "hinge-liker.js", "hinge-opener": "hinge-opener.js" },
   "scripts": {
+    "start": "node hinge.js",
+    "hinge": "node hinge.js",
+    "dry": "DRY_RUN=1 node hinge.js",
     "like": "node hinge-liker.js",
-    "dry": "DRY_RUN=1 node hinge-liker.js 1",
+    "like:dry": "DRY_RUN=1 node hinge-liker.js 1",
     "open": "node hinge-opener.js",
     "open:dry": "DRY_RUN=1 node hinge-opener.js"
   },

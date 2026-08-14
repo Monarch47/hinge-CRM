@@ -23,7 +23,16 @@ adb devices -l
 
 You should see your device listed as `device`. If it says `unauthorized`, re-accept the prompt on the phone. If nothing shows, try another cable/port.
 
-## 4. Profile the device (optional sanity checks)
+## 4. OpenAI key + photo crop
+
+```bash
+cp .env.example .env    # then set OPENAI_API_KEY=
+pip3 install pillow     # first-photo crop (python3)
+```
+
+`.env` is git-ignored. Do not commit a real key.
+
+## 5. Profile the device (optional sanity checks)
 
 ```bash
 adb shell wm size                       # e.g. Physical size: 1080x2400

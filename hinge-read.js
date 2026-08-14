@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 /*
- * hinge-read.js — scrape one profile, draft a like-comment, type it onto
- * the hooked card (fallback: any prompt/photo), send a Priority Like.
- * Never taps the Rose.
+ * hinge-read.js — scrape / draft / send helpers. Prefer `node hinge.js`.
  *
  * Usage:
  *   node hinge-read.js                 # scrape → draft → send
@@ -40,6 +38,11 @@ const MODEL   = process.env.MODEL || 'gpt-5.6';
 const MAX_LINE = 255;
 const LOAD_TIMEOUT = parseInt(process.env.LOAD_TIMEOUT || '12000', 10);
 const PKG = 'co.hinge.app';
+const SHOTS_DIR = process.env.SHOTS_DIR || 'screenshots';
+const CROPS_DIR = process.env.CROPS_DIR || 'screenshots_cropped';
+// Send-sheet photo card on a 1080x2400 capture (crop_collage.py).
+const SEND_CROP = [108, 242, 972, 1104];
+const SEND_SIZE = [1080, 2400];
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 const rand  = (a, b) => a + Math.random() * (b - a);
@@ -102,6 +105,67 @@ function swipeProfile(dir) {
   const x = w / 2, a = h * 0.70, b = h * 0.38;
   if (dir === 'down') swipe(x, a, x, b, 420);
   else                swipe(x, b, x, a, 420);
+}
+
+const stamp = () => new Date().toISOString().replace('T', '_').replace(/[:.]/g, '-').slice(0, 19);
+function shotSlug(name) {
+  return String(name || '').replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'profile';
+}
+function screenshot(name) {
+  try {
+    fs.mkdirSync(SHOTS_DIR, { recursive: true });
+    const args = TARGET ? ['-s', TARGET, 'exec-out', 'screencap', '-p'] : ['exec-out', 'screencap', '-p'];
+    const png = execFileSync(ADB, args, { maxBuffer: 64 * 1024 * 1024 });
+    const file = path.join(SHOTS_DIR, name);
+    fs.writeFileSync(file, png);
+    return file;
+  } catch (e) { log('  ! screenshot failed:', e.message.split('\n')[0]); return null; }
+}
+function cropPng(src, dest, box) {
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const [l, t, r, b] = box.map(Math.round);
+    const py = [
+      'from PIL import Image',
+      `im = Image.open(${JSON.stringify(src)})`,
+      `l=max(0,${l}); t=max(0,${t}); r=min(im.width,${r}); b=min(im.height,${b})`,
+      `im.convert("RGB").crop((l,t,r,b)).save(${JSON.stringify(dest)})`,
+    ].join('\n');
+    execFileSync('python3', ['-c', py], { timeout: 8000, stdio: ['ignore', 'ignore', 'pipe'] });
+    return dest;
+  } catch (e) {
+    const err = String(e.stderr || e.message || '').trim().split('\n')[0];
+    log('  ! crop skipped', err ? `— ${err}` : '');
+    return null;
+  }
+}
+function scaleSendCrop() {
+  const { w, h } = screenSize();
+  return SEND_CROP.map((v, i) => Math.round(v * (i % 2 === 0 ? w / SEND_SIZE[0] : h / SEND_SIZE[1])));
+}
+function firstPhotoNode(xml) {
+  const { h } = screenSize();
+  const photos = allNodes(xml).filter(n =>
+    n.cls === 'ImageView' && /(?:photo|video)$/i.test(n.desc) && (n.bot - n.top) > 220
+  ).sort((a, b) => a.top - b.top);
+  return photos.find(n => n.top < h * 0.72) || photos[0] || null;
+}
+function captureFirstPhoto(xml, who) {
+  const n = firstPhotoNode(xml);
+  const base = `${stamp()}_${shotSlug(who)}`;
+  const full = screenshot(`${base}_first.png`);
+  if (!full) return null;
+  const box = n
+    ? [n.left, n.top, n.right, n.bot]
+    : scaleSendCrop();
+  const cropped = cropPng(full, path.join(CROPS_DIR, `${base}_first.png`), box);
+  if (cropped) {
+    try { fs.unlinkSync(full); } catch (_) {}
+    log(`First photo → ${cropped}`);
+    return cropped;
+  }
+  log(`First photo (uncropped) → ${full}`);
+  return full;
 }
 
 const EMOJI = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}️‍]/u;
@@ -241,6 +305,7 @@ const CHROME = new RegExp(
   '^(Discover|Standouts|Likes You|Profile Hub|More|Undo last skip' +
   '|Dating preferences|Age filter options|Height filter options' +
   '|Dating intentions filter options' +
+  '|Selfie verified|Get verified' +
   '|Mute|Unmute|Open video|Rewind)$',
   'i'
 );
@@ -249,6 +314,7 @@ function isControlLabel(s) {
   if (!s) return false;
   if (/^(Like|Unlike|Skip|Send)\b/i.test(s)) return true;
   if (/^(Play|Pause|Mute|Unmute)\b/i.test(s)) return true;
+  if (/^Signals filter\b/i.test(s)) return true;
   if (CHROME.test(s) || /^Matches/.test(s)) return true;
   if (/[’'`]s\s+(photo|video)$/i.test(s)) return true;
   return false;
@@ -628,9 +694,66 @@ async function commentAndSend(line, kind) {
   return true;
 }
 
+function relPhoto(abs) {
+  if (!abs) return '';
+  return path.relative(__dirname, path.resolve(abs)).split(path.sep).join('/');
+}
+function keepPhoto(src, id) {
+  if (!src || !id || !fs.existsSync(src)) return '';
+  fs.mkdirSync(CROPS_DIR, { recursive: true });
+  const dest = path.join(CROPS_DIR, `${id}.png`);
+  try {
+    if (path.resolve(src) !== path.resolve(dest)) fs.copyFileSync(src, dest);
+  } catch (_) { return relPhoto(src); }
+  return relPhoto(dest);
+}
+function slug(s) {
+  return String(s || 'someone').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'someone';
+}
+function profileAge(p) {
+  const v = (p.items || []).find(it => it.kind === 'vital' && /^age$/i.test(it.q));
+  if (!v) return '';
+  const n = parseInt(v.a, 10);
+  return Number.isFinite(n) ? n : String(v.a);
+}
+function fieldForLog(card, target) {
+  if (card && (card.q || card.a)) {
+    return card.a ? `${card.label}: ${card.q} — ${card.a}` : `${card.label}: ${card.q}`;
+  }
+  return (target && (target.how || target.desc)) || '';
+}
+// Append one object between /*ROWS_START*/ and /*ROWS_END*/ in hinge-log.html.
+function appendLog(entry) {
+  const file = path.join(__dirname, 'hinge-log.html');
+  let html;
+  try { html = fs.readFileSync(file, 'utf8'); }
+  catch (e) { log(`! log skipped — ${e.message.split('\n')[0]}`); return; }
+  const marker = '/*ROWS_END*/';
+  const i = html.indexOf(marker);
+  if (i < 0) { log('! hinge-log.html missing /*ROWS_END*/ — not logged'); return; }
+  const date = new Date().toISOString().slice(0, 10);
+  const id = `${date}-${slug(entry.name)}-${Date.now().toString(36).slice(-4)}`;
+  const photo = keepPhoto(entry.photo, id) || relPhoto(entry.photo);
+  const row = {
+    id,
+    date,
+    name: entry.name || 'someone',
+    age: entry.age === '' || entry.age == null ? '' : entry.age,
+    field: entry.field || '',
+    message: entry.message || '',
+    status: 'sent',
+    notes: entry.notes || '',
+    photo,
+  };
+  html = html.slice(0, i) + JSON.stringify(row) + ',\n' + html.slice(i);
+  fs.writeFileSync(file, html);
+  log(`Logged ${row.name} → hinge-log.html`);
+}
+
 async function readProfile() {
   log('Reading profile — scrolling for every card type');
   let xml = await scrollToTop();
+  const photo = captureFirstPhoto(xml, profileName(xml));
   const items = [];
   const seen = new Set();
   let who = '';
@@ -662,7 +785,7 @@ async function readProfile() {
     stale = n ? 0 : stale + 1;
     if (VERBOSE) log(`  screen ${i + 1}: +${n} new`);
   }
-  return { who, pronouns, items };
+  return { who, pronouns, items, photo };
 }
 
 async function main() {
@@ -719,6 +842,15 @@ async function main() {
     tap(target.like.cx, target.like.cy);
     await delay(rand(700, 1200));
     const ok = await commentAndSend(draft.line, target.how);
+    if (ok) {
+      appendLog({
+        name: profile.who || 'someone',
+        age: profileAge(profile),
+        field: fieldForLog(card, target),
+        message: draft.line,
+        photo: profile.photo || '',
+      });
+    }
     log(ok ? 'Done' : `Done — ${DRY_RUN ? 'dry-run, nothing sent' : 'send failed'}`);
     return;
   }
@@ -735,6 +867,10 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => { lockScreen(); process.exit(sig === 'SIGINT' ? 130 : 143); });
 }
 
-main()
-  .catch(e => { console.error('Fatal:', e.message); process.exitCode = 1; })
-  .finally(() => { lockScreen(); });
+function boot() {
+  return main()
+    .catch(e => { console.error('Fatal:', e.message); process.exitCode = 1; })
+    .finally(() => { lockScreen(); });
+}
+if (require.main === module) boot();
+module.exports = { boot };

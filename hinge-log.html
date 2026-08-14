@@ -30,6 +30,8 @@
   tr:last-child td{border-bottom:0}
   td.msg{max-width:340px;white-space:pre-wrap}
   td.field{max-width:220px;color:var(--muted)}
+  td.pic img{width:52px;height:52px;object-fit:cover;border-radius:8px;display:block;background:var(--line)}
+  td.pic a{color:var(--accent);font-size:12px}
   select{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:5px 8px;font:inherit}
   .st-matched{color:var(--good)} .st-talking{color:var(--good)} .st-date{color:var(--accent)}
   .st-replied{color:var(--warn)} .st-ghosted,.st-passed{color:var(--bad)}
@@ -57,7 +59,7 @@
     <table>
       <thead>
         <tr>
-          <th>#</th><th>Date</th><th>Name</th><th>Age</th>
+          <th>#</th><th>Date</th><th></th><th>Name</th><th>Age</th>
           <th>Hooked on</th><th>Message sent</th><th>Status</th><th>Notes</th>
         </tr>
       </thead>
@@ -66,7 +68,7 @@
   </div>
   <div class="note">
     Status & Notes are editable — click and type; edits save in this browser (localStorage) and survive new entries.
-    New rows are appended by the agent between the markers below. First names only by design; no photos stored.
+    New rows are appended by the agent between the markers below. First names only. Photo is a local crop of the first card, stored next to this file.
   </div>
 </div>
 
@@ -74,10 +76,9 @@
 // ==== DATA (agent appends objects between the markers; keep the markers intact) ====
 const ROWS = [
 /*ROWS_START*/
-{id:"2026-08-13-aishini", date:"2026-08-13", name:"Aishini", age:24, field:"Prompt: I go crazy for — “crazy biceps (developed frontal lobe)”", message:"'developed frontal lobe' is a bold thing to ask for on an app that runs entirely on impulse decisions. How's that search going so far ;)", status:"sent", notes:"Priority like. Hook = the parenthetical bait-and-switch (gym cliché → emotional maturity); joke aimed at the app, not at her. Other hooks on file: all-brown wardrobe across 3 of 4 photos, 'several accents in one go', 'pan world movie' dishes section."},
 /*ROWS_END*/
 ];
-// {id, date, name, age, field, message, status, notes}
+// {id, date, name, age, field, message, status, notes, photo}
 
 const STATUSES = ["sent","replied","matched","talking","date","ghosted","passed"];
 const store = {
@@ -100,10 +101,15 @@ function render(filter=""){
     const hay = [r.name,r.message,r.field,notes].join(" ").toLowerCase();
     if(f && !hay.includes(f)) return;
     shown++;
+    const photo = (r.photo || "").trim();
+    const pic = photo
+      ? `<a href="${esc(photo)}"><img src="${esc(photo)}" alt=""></a>`
+      : "";
     const tr = document.createElement("tr");
     tr.innerHTML =
       `<td>${i+1}</td>`+
       `<td>${esc(r.date)}</td>`+
+      `<td class="pic">${pic}</td>`+
       `<td>${esc(r.name)}</td>`+
       `<td>${esc(r.age)}</td>`+
       `<td class="field">${esc(r.field)}</td>`+
@@ -114,7 +120,7 @@ function render(filter=""){
       `<td contenteditable data-id="${r.id}">${esc(notes)}</td>`;
     tbody.appendChild(tr);
   });
-  if(!shown){ tbody.innerHTML = `<tr><td colspan="8" class="empty">${ROWS.length? "No matches." : "No entries yet — the agent appends a row each time you send an opener."}</td></tr>`; }
+  if(!shown){ tbody.innerHTML = `<tr><td colspan="9" class="empty">${ROWS.length? "No matches." : "No entries yet — the agent appends a row each time you send an opener."}</td></tr>`; }
   document.getElementById("count").textContent = `${shown} shown / ${ROWS.length} total`;
   const stats = document.getElementById("stats");
   stats.innerHTML = `<span class="pill">Total <b>${ROWS.length}</b></span>` +

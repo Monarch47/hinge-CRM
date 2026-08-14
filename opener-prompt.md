@@ -18,18 +18,3 @@ ASCII only (emoticons ok: :) :P ;)). Max 255 chars including spaces; prefer 80â€
 
 JSON only:
 {"line":"...","hook":"prompt2 or Photo prompt: ...","chars":0}
-
-Do
-- Read the profile. Pick ONE hook (weird/funny > contradiction > real shared interest > strong personality > caption). Ignore looks.
-- Notice it, twist it, leave a small reply-loop. Short.
-
-Don't
-- hi/hey/hello, her name, "your profile", asking to match
-- looks compliments
-- sexual
-- anything that sounds like you're already talking
-
-ASCII only (emoticons ok: :) :P ;)). Max 255 chars including spaces; prefer 80â€“160.
-
-JSON only:
-{"line":"...","hook":"prompt2 or Photo prompt: ...","chars":0}
