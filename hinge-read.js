@@ -3,13 +3,25 @@
  * hinge-read.js — scrape / draft / send helpers. Prefer `node hinge.js`.
  *
  * Usage:
- *   node hinge-read.js                 # scrape → draft → send
- *   DRY_RUN=1 node hinge-read.js       # type the line, don't send
- *   NODRAFT=1 node hinge-read.js       # scrape only
- *   SERIAL=192.168.1.42:5555 node hinge-read.js
- *   VERBOSE=1 node hinge-read.js       # also print every raw node
+ *   node hinge-read.js                   # no cap, 1–5s gap, like everyone
+ *   node hinge-read.js [count]           # stop after `count` likes
+ *   DRY_RUN=1 node hinge-read.js         # type the line, don't send (one profile)
+ *   NODRAFT=1 node hinge-read.js         # scrape only (one profile)
+ *   SERIAL=192.168.29.4:5555 node hinge-read.js
+ *   VERBOSE=1 node hinge-read.js         # also print every raw node
  *
- * Always locks the phone when the process ends (success, error, or Ctrl+C).
+ * Env vars (same as hinge-opener.js):
+ *   NUM_LIKES  how many to send            (default: no cap, or first CLI arg)
+ *   MIN_GAP    min seconds between profiles (default 1)
+ *   MAX_GAP    max seconds between profiles (default 5)
+ *   SKIP_MIN   like this many then pass one, low end   (default 6)
+ *   SKIP_MAX   ...high end                             (default 0 = never pass)
+ *   DRY_RUN=1  self-test: sends nothing
+ *   NO_LOCK=1  leave the screen on at exit (default: put it to sleep / lock)
+ *   LOAD_TIMEOUT  ms to wait for a screen to load, for lag/slow net (default 12000)
+ *   SHOTS_DIR  folder for send-sheet screenshots  (default screenshots/)
+ *   ADB        path to adb                 (default: auto-detect via $PATH + common spots)
+ *   SERIAL     adb -s target               (default: first authorized device)
  */
 'use strict';
 const { execFileSync } = require('child_process');
@@ -33,9 +45,18 @@ const ADB     = process.env.ADB || findAdb();
 let   TARGET  = process.env.SERIAL || '';
 const VERBOSE = process.env.VERBOSE === '1';
 const NODRAFT = process.env.NODRAFT === '1';
-const DRY_RUN = process.env.DRY_RUN === '1';
 const MODEL   = process.env.MODEL || 'gpt-5.6';
 const MAX_LINE = 255;
+// No cap by default — runs until Hinge runs out of profiles/likes. Pass a count
+// (CLI arg or NUM_LIKES) to cap it.
+const NUM     = (process.argv[2] || process.env.NUM_LIKES)
+  ? parseInt(process.argv[2] || process.env.NUM_LIKES, 10) : Infinity;
+const MIN_GAP = parseFloat(process.env.MIN_GAP || '1');
+const MAX_GAP = parseFloat(process.env.MAX_GAP || '5');
+const SKIP_MIN = parseInt(process.env.SKIP_MIN || '6', 10);
+const SKIP_MAX = parseInt(process.env.SKIP_MAX || '0', 10);  // 0 = like everyone
+const DRY_RUN = process.env.DRY_RUN === '1';
+const NO_LOCK = process.env.NO_LOCK === '1';
 const LOAD_TIMEOUT = parseInt(process.env.LOAD_TIMEOUT || '12000', 10);
 const PKG = 'co.hinge.app';
 const SHOTS_DIR = process.env.SHOTS_DIR || 'screenshots';
@@ -81,6 +102,7 @@ function adb(args, wantOut = false, timeoutMs = 0) {
 const wake = () => { try { adb(['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP']); } catch (_) {} };
 const sleepScreen = () => { try { adb(['shell', 'input', 'keyevent', 'KEYCODE_SLEEP']); } catch (_) {} };
 const tap = (x, y) => adb(['shell', 'input', 'tap', `${Math.round(x)}`, `${Math.round(y)}`]);
+const back = () => { try { adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK']); } catch (_) {} };
 const swipe = (x1, y1, x2, y2, d = 450) =>
   adb(['shell', 'input', 'swipe', ...[x1, y1, x2, y2, d].map(v => `${Math.round(v)}`)]);
 
@@ -271,20 +293,23 @@ function allNodes(xml) {
 }
 const findDesc = (xml, re) => allNodes(xml).filter(n => re.test(n.desc));
 
+function cleanName(n) {
+  n = String(n || '').trim();
+  if (!n || /^(like|unlike|skip|play|pause|next)$/i.test(n)) return '';
+  return n;
+}
 function profileName(xml) {
   const skip = findDesc(xml, /^Skip /)[0];
-  if (skip) {
-    const n = skip.desc.replace(/^Skip\s+/i, '').trim();
-    if (n) return n;
-  }
+  const fromSkip = skip ? cleanName(skip.desc.replace(/^Skip\s+/i, '')) : '';
+  // One-letter Skip labels ("Skip N") are usually a truncated a11y string.
+  if (fromSkip.length >= 2) return fromSkip;
   for (const node of findDesc(xml, /(?:photo|video)$/i)) {
-    const n = node.desc
+    const n = cleanName(node.desc
       .replace(/[’'`]s\s+(photo|video)$/i, '')
-      .replace(/\s+(photo|video)$/i, '')
-      .trim();
-    if (n && !/^(like|unlike|skip|play|pause)$/i.test(n)) return n;
+      .replace(/\s+(photo|video)$/i, ''));
+    if (n.length >= 2) return n;
   }
-  return '';
+  return fromSkip;
 }
 
 async function waitFor(re, timeout = LOAD_TIMEOUT) {
@@ -788,6 +813,90 @@ async function readProfile() {
   return { who, pronouns, items, photo };
 }
 
+async function waitForProfile() {
+  let hit = await waitFor(/^(Like |Skip )/);
+  for (let t = 0; !hit && t < 2; t++) {
+    log('No profile controls yet — scrolling');
+    swipeProfile('down');
+    hit = await waitFor(/^(Like |Skip )/, 4000);
+  }
+  return hit;
+}
+
+async function skipProfile() {
+  const xml = await getUI();
+  const sk = findDesc(xml, /^Skip /)[0];
+  if (!sk) {
+    log('Skip button missing');
+    return false;
+  }
+  log(`Skipping ${profileName(xml) || sk.desc.replace(/^Skip\s+/i, '') || 'someone'}`);
+  tap(sk.cx, sk.cy);
+  return true;
+}
+
+async function bailSheet() {
+  back();
+  await delay(500);
+  back();
+  await delay(400);
+}
+
+async function handleOneProfile() {
+  const hit = await waitForProfile();
+  if (!hit) return 'none';
+
+  const profile = await readProfile();
+  const dump = formatProfile(profile);
+  process.stdout.write(dump + '\n');
+
+  if (NODRAFT) return 'scraped';
+
+  let draft;
+  try {
+    log(`Drafting with ${MODEL}`);
+    draft = await draftOpener(dump);
+  } catch (e) {
+    log(`Draft failed — ${e.message.split('\n')[0]}`);
+    await skipProfile();
+    return 'failed';
+  }
+  log(`hook  ${draft.hook || '(none)'}`);
+  log(`${draft.chars} chars`);
+  console.log(draft.line);
+
+  const cards = labeledCards(profile);
+  const card = resolveHook(draft.hook, cards);
+  if (card) log(`Looking for ${card.label}: ${card.q}${card.a ? ' / ' + card.a : ''}`);
+  else log('Hook did not match a card — will like whatever is on screen');
+
+  const target = await findLikeTarget(card);
+  if (!target) {
+    log('No like button found — skipping');
+    await skipProfile();
+    return 'failed';
+  }
+  log(`Tapping ${target.desc} (${target.how})`);
+  tap(target.like.cx, target.like.cy);
+  await delay(rand(700, 1200));
+  const ok = await commentAndSend(draft.line, target.how);
+  if (ok) {
+    appendLog({
+      name: profile.who || 'someone',
+      age: profileAge(profile),
+      field: fieldForLog(card, target),
+      message: draft.line,
+      photo: profile.photo || '',
+    });
+    return 'sent';
+  }
+  if (DRY_RUN) return 'dry';
+  log('Send failed — backing out');
+  await bailSheet();
+  await skipProfile();
+  return 'failed';
+}
+
 async function main() {
   loadEnv();
   const devs = adb(['devices'], true).trim().split('\n').slice(1)
@@ -795,7 +904,13 @@ async function main() {
   if (!devs.length) { log('No authorized device — check `adb devices`.'); process.exitCode = 1; return; }
   if (!TARGET) TARGET = devs[0];
 
+  const cap = NUM === Infinity ? 'until profiles run out' : `${NUM} like${NUM === 1 ? '' : 's'} then stop`;
+  const pass = SKIP_MAX <= 0 ? 'liking everyone' : `pass 1 after every ${SKIP_MIN}–${SKIP_MAX} likes`;
   log(`Connected to ${TARGET}`);
+  if (NODRAFT) log('scrape only — one profile, nothing sent');
+  else if (DRY_RUN) log('dry-run — type on one profile, send nothing');
+  else log(`${cap} · ${MIN_GAP}–${MAX_GAP}s between likes · ${pass}`);
+
   log('Opening Hinge');
   launchHinge();
   await delay(1200);
@@ -812,54 +927,65 @@ async function main() {
     }
   }
 
-  let hit = await waitFor(/^(Like |Skip )/);
-  for (let t = 0; !hit && t < 2; t++) {
-    log('No profile controls yet — scrolling');
-    swipeProfile('down');
-    hit = await waitFor(/^(Like |Skip )/, 4000);
-  }
-  if (!hit) { log('Stopped — no profile on screen.'); return; }
-
-  const profile = await readProfile();
-  const dump = formatProfile(profile);
-  process.stdout.write(dump + '\n');
-
-  if (!NODRAFT) {
-    log(`Drafting with ${MODEL}`);
-    const draft = await draftOpener(dump);
-    log(`hook  ${draft.hook || '(none)'}`);
-    log(`${draft.chars} chars`);
-    console.log(draft.line);
-
-    const cards = labeledCards(profile);
-    const card = resolveHook(draft.hook, cards);
-    if (card) log(`Looking for ${card.label}: ${card.q}${card.a ? ' / ' + card.a : ''}`);
-    else log('Hook did not match a card — will like whatever is on screen');
-
-    const target = await findLikeTarget(card);
-    if (!target) { log('Stopped — no like button found.'); return; }
-    log(`Tapping ${target.desc} (${target.how})`);
-    tap(target.like.cx, target.like.cy);
-    await delay(rand(700, 1200));
-    const ok = await commentAndSend(draft.line, target.how);
-    if (ok) {
-      appendLog({
-        name: profile.who || 'someone',
-        age: profileAge(profile),
-        field: fieldForLog(card, target),
-        message: draft.line,
-        photo: profile.photo || '',
-      });
-    }
-    log(ok ? 'Done' : `Done — ${DRY_RUN ? 'dry-run, nothing sent' : 'send failed'}`);
+  if (NODRAFT || DRY_RUN) {
+    const result = await handleOneProfile();
+    if (result === 'none') log('Stopped — no profile on screen.');
+    else if (result === 'scraped') log('Done — nothing sent');
+    else if (result === 'dry') log('Done — dry-run, nothing sent');
+    else log('Done');
     return;
   }
-  log('Done — nothing sent');
+
+  // SKIP_MAX=0 → never pass; otherwise like SKIP_MIN..SKIP_MAX profiles, then pass one.
+  const nextRun = () => SKIP_MAX <= 0 ? Infinity
+    : SKIP_MIN + Math.floor(Math.random() * (SKIP_MAX - SKIP_MIN + 1));
+  let likesBeforeSkip = nextRun();
+  let sent = 0, passed = 0, errors = 0, consecErr = 0;
+  while (sent < NUM) {
+    wake();
+    if (likesBeforeSkip <= 0) {
+      const hit = await waitForProfile();
+      if (!hit) {
+        log('Stopped — no profile on screen (out of cards, a popup, or paywall).');
+        break;
+      }
+      if (await skipProfile()) passed++;
+      likesBeforeSkip = nextRun();
+      await delay(rand(MIN_GAP, MAX_GAP) * 1000);
+      continue;
+    }
+
+    const result = await handleOneProfile();
+    if (result === 'none') {
+      log('Stopped — no profile on screen (out of cards, a popup, or paywall).');
+      break;
+    }
+    if (result === 'sent') {
+      sent++;
+      likesBeforeSkip--;
+      consecErr = 0;
+      log(`Sent ${sent}${NUM === Infinity ? '' : '/' + NUM}`);
+    } else {
+      errors++;
+      consecErr++;
+      if (consecErr >= 5) {
+        log('Stopped — 5 failures in a row (paywall / stuck UI / out of likes).');
+        break;
+      }
+    }
+    if (sent >= NUM) break;
+    await delay(rand(MIN_GAP, MAX_GAP) * 1000);
+  }
+
+  const bits = [`${sent} sent`];
+  if (passed) bits.push(`${passed} skipped`);
+  if (errors) bits.push(`${errors} failed`);
+  log(`Done — ${bits.join(', ')}`);
 }
 
 let locked = false;
 function lockScreen() {
-  if (locked) return;
+  if (locked || NO_LOCK) return;
   locked = true;
   try { log('Locking screen'); sleepScreen(); } catch (_) {}
 }

@@ -1,10 +1,10 @@
 # Tazer — Hinge reply co-pilot
 
-A personal-use co-pilot that drives **Hinge on Android over ADB**. The release script is **`hinge.js`**: one profile, one drafted like-comment, then the phone locks.
+A personal-use co-pilot that drives **Hinge on Android over ADB**. The release script is **`hinge.js`**: scrape a Discover card, draft a like-comment, send it, log it, then keep going until the feed runs out (or you pass a count). The phone locks when the run ends.
 
 ```
 scrape text → crop the first photo → draft a like-comment → type it
-onto the hooked card → append hinge-log.html → lock the phone
+onto the hooked card → append hinge-log.html → next profile
 ```
 
 Never taps the Rose. Locks on any exit (success, error, Ctrl+C).
@@ -20,9 +20,10 @@ adb devices -l
 cp .env.example .env   # then paste OPENAI_API_KEY=
 
 # 4. Open Hinge to Discover, then:
-npm start              # or: node hinge.js
+npm start              # or: node hinge.js          # no cap, 1–5s gap
+node hinge.js 8        # stop after 8 sends
 
-# Type the line, screenshot, do not send:
+# Type the line, do not send:
 npm run dry            # or: DRY_RUN=1 node hinge.js
 ```
 
@@ -35,7 +36,8 @@ Wireless debugging: `SERIAL=192.168.1.42:5555 node hinge.js`
 3. Crops the first photo (local file only; git-ignored).
 4. Asks the model for **one** hook-specific opener (`opener-prompt.md` / `persona.md`).
 5. Taps that card's like heart, types the line, sends a **Priority Like** (unless `DRY_RUN=1`).
-6. Appends a row to `hinge-log.html` and puts the screen to sleep.
+6. Appends a row to `hinge-log.html`, waits a few seconds, and does the next card.
+7. When the feed is empty, you hit the count, or you Ctrl+C, it puts the screen to sleep.
 
 ## Design principles
 
@@ -48,7 +50,7 @@ Wireless debugging: `SERIAL=192.168.1.42:5555 node hinge.js`
 
 | File | What it is |
 |------|------------|
-| **`hinge.js`** | **v1 entrypoint.** One profile: scrape → crop → draft → type → log → lock |
+| **`hinge.js`** | **v1 entrypoint.** Loop: scrape → crop → draft → type → log → next profile |
 | `hinge-read.js` | Implementation `hinge.js` boots |
 | `opener-prompt.md` | System prompt for the drafted like-comment |
 | `persona.md` | Reply style guide — how openers are ranked and written |
@@ -63,13 +65,20 @@ Wireless debugging: `SERIAL=192.168.1.42:5555 node hinge.js`
 | Var | Default | Meaning |
 |-----|---------|---------|
 | `OPENAI_API_KEY` | (required) | From `.env`. Never commit this file. |
-| `DRY_RUN=1` | off | Type the line, do not tap Send |
+| `NUM_LIKES` | no cap | How many to send (or first CLI arg: `node hinge.js 8`) |
+| `MIN_GAP` | `1` | Min seconds between profiles |
+| `MAX_GAP` | `5` | Max seconds between profiles |
+| `SKIP_MIN` | `6` | Like this many, then pass one (low end) |
+| `SKIP_MAX` | `0` | High end; `0` = never pass |
+| `DRY_RUN=1` | off | Type the line on one profile, do not tap Send |
+| `NO_LOCK=1` | off | Leave the screen on when the run ends |
+| `LOAD_TIMEOUT` | `12000` | ms to wait for a screen |
+| `SHOTS_DIR` | `screenshots/` | Folder for send-sheet screenshots |
+| `ADB` | auto-detect | Path to `adb` |
+| `SERIAL` | first `adb` device | e.g. `192.168.29.4:5555` |
 | `NODRAFT=1` | off | Scrape only — no draft, no send |
-| `SERIAL` | first `adb` device | e.g. `192.168.1.42:5555` |
 | `MODEL` | `gpt-5.6` | Chat Completions model |
 | `VERBOSE=1` | off | Print every harvested node |
-| `LOAD_TIMEOUT` | `12000` | ms to wait for a screen |
-| `ADB` | auto-detect | Path to `adb` |
 
 ## Requirements
 

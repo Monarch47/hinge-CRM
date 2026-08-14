@@ -1,8 +1,8 @@
 {
   "name": "tazer-hinge-copilot",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
-  "description": "Personal-use Hinge co-pilot: scrape a profile, draft a like-comment, send it, log it, lock the phone.",
+  "description": "Personal-use Hinge co-pilot: scrape profiles, draft like-comments, send, log, keep going.",
   "bin": { "hinge": "hinge.js", "hinge-liker": "hinge-liker.js", "hinge-opener": "hinge-opener.js" },
   "scripts": {
     "start": "node hinge.js",
