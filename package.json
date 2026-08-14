@@ -1,6 +1,6 @@
 {
   "name": "hinge-crm",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Hinge co-pilot driven over adb: scrape a profile, draft a like-comment with an LLM, type it onto the hooked card, log it, keep going. Needs adb + an Android device with USB debugging and an OpenAI API key.",
   "bin": {
     "hinge": "hinge.js",
@@ -15,7 +15,8 @@
     "opener-prompt.md",
     "hinge-log.html",
     ".env.example",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "start": "node hinge.js",
@@ -49,5 +50,5 @@
   "engines": {
     "node": ">=18"
   },
-  "license": "UNLICENSED"
+  "license": "MIT"
 }
