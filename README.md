@@ -33,3 +33,5 @@ Same knobs as [`hinge-opener.js`](hinge-opener.js):
 | `DRY_RUN` | off | `DRY_RUN=1` types the line on one profile, does not send |
 
 First names only in the log, never uploaded. Voice: [`opener-prompt.md`](opener-prompt.md) · [`persona.md`](persona.md).
+
+— [@ajtazer](https://github.com/ajtazer)
