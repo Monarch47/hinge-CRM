@@ -5,6 +5,7 @@ npm-debug.log*
 # Captured device data — NEVER commit real people's profile data.
 # Screenshots and UI dumps are transient working files only.
 *.png
+!docs/*.png
 ui*.xml
 dump_*.xml
 prof_*.png
