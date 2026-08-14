@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Syntax
+        run: |
+          for f in *.js scripts/*.js; do
+            node --check "$f" || exit 1
+          done
+          echo "all files parse"
+
+      # Runs on every push so a bad `files` allowlist is caught here rather
+      # than at release time, when it would already be too late.
+      - name: Package safety check
+        run: node scripts/check-package.js
+
+      - name: No real profile data committed
+        run: |
+          rows=$(grep -c '"status":"sent"' hinge-log.html || true)
+          if [ "${rows:-0}" != "0" ]; then
+            echo "::error::hinge-log.html has $rows real profile row(s) committed — this repo is public"
+            exit 1
+          fi
+          echo "hinge-log.html is the empty template"

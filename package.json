@@ -2,7 +2,11 @@
   "name": "hinge-crm",
   "version": "1.2.1",
   "description": "Hinge co-pilot driven over adb: scrape a profile, draft a like-comment with an LLM, type it onto the hooked card, log it, keep going. Needs adb + an Android device with USB debugging and an OpenAI API key.",
-  "bin": { "hinge": "hinge.js", "hinge-liker": "hinge-liker.js", "hinge-opener": "hinge-opener.js" },
+  "bin": {
+    "hinge": "hinge.js",
+    "hinge-liker": "hinge-liker.js",
+    "hinge-opener": "hinge-opener.js"
+  },
   "files": [
     "hinge.js",
     "hinge-read.js",
@@ -20,13 +24,30 @@
     "like": "node hinge-liker.js",
     "like:dry": "DRY_RUN=1 node hinge-liker.js 1",
     "open": "node hinge-opener.js",
-    "open:dry": "DRY_RUN=1 node hinge-opener.js"
+    "open:dry": "DRY_RUN=1 node hinge-opener.js",
+    "check": "node scripts/check-package.js",
+    "prepublishOnly": "node scripts/check-package.js"
   },
-  "keywords": ["hinge", "adb", "android", "automation", "uiautomator", "cli", "openai"],
+  "keywords": [
+    "hinge",
+    "adb",
+    "android",
+    "automation",
+    "uiautomator",
+    "cli",
+    "openai"
+  ],
   "author": "Anuj Rawat (@ajtazer) <ajcoolx619@gmail.com>",
-  "repository": { "type": "git", "url": "git+https://github.com/Monarch47/hinge-CRM.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Monarch47/hinge-CRM.git"
+  },
   "homepage": "https://github.com/Monarch47/hinge-CRM#readme",
-  "bugs": { "url": "https://github.com/Monarch47/hinge-CRM/issues" },
-  "engines": { "node": ">=18" },
+  "bugs": {
+    "url": "https://github.com/Monarch47/hinge-CRM/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "license": "UNLICENSED"
 }

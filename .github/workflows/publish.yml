@@ -1,0 +1,65 @@
+name: publish to npm
+
+# npm never updates itself — a GitHub release does nothing to the registry.
+# This is the step that actually publishes. Cut a GitHub Release and it runs.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run every check but do not publish'
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write        # npm provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      # A release tagged v1.3.0 that ships package.json 1.2.1 is the classic
+      # way to publish the wrong thing. Refuse instead.
+      - name: Tag must match package.json version
+        if: github.event_name == 'release'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          echo "tag=$tag  package.json=$pkg"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag does not match package.json $pkg — bump package.json or retag"
+            exit 1
+          fi
+
+      - name: Already on the registry?
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          pkg="$(node -p "require('./package.json').version")"
+          if npm view "$name@$pkg" version >/dev/null 2>&1; then
+            echo "::error::$name@$pkg is already published — versions are immutable, bump it"
+            exit 1
+          fi
+          echo "$name@$pkg is free"
+
+      # The repo holds a live .env, run journals and real profile data.
+      # This is what stops any of it reaching the registry.
+      - name: Package safety check
+        run: node scripts/check-package.js
+
+      - name: Publish
+        if: github.event_name == 'release' || inputs.dry_run == false
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Dry run only
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        run: echo "All checks passed. Re-run with dry_run unchecked to publish."
