@@ -115,8 +115,26 @@ function dbgFail(event, data = {}) {
   dbg(event, { ...data, ok: false, xmlFile: raw || undefined, screen: screenNodes(xml) });
 }
 
+/* ---- where user data lives ----------------------------------------------
+ * Installed globally, __dirname is inside node_modules: a .env there would be
+ * wiped on every upgrade and hinge-log.html would be unwritable. So user data
+ * (.env, the log) resolves against the working directory, and only files that
+ * ship with the package (opener-prompt.md, the empty log template) fall back
+ * to __dirname. Running from a clone the two are the same directory, so this
+ * changes nothing for a checkout.
+ */
+const userFile = name => path.resolve(process.cwd(), name);
+const pkgFile  = name => path.join(__dirname, name);
+// Prefer the copy next to the user, fall back to the one we shipped.
+function resolveRead(name) {
+  const mine = userFile(name);
+  if (fs.existsSync(mine)) return mine;
+  const packaged = pkgFile(name);
+  return fs.existsSync(packaged) ? packaged : mine;
+}
+
 function loadEnv() {
-  const file = path.join(__dirname, '.env');
+  const file = resolveRead('.env');
   if (!fs.existsSync(file)) return;
   for (const raw of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
     const line = raw.trim();
@@ -647,7 +665,7 @@ function parseDraft(raw) {
 async function draftOpener(profileText) {
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error('OPENAI_API_KEY missing — add it to .env');
-  const system = fs.readFileSync(path.join(__dirname, 'opener-prompt.md'), 'utf8');
+  const system = fs.readFileSync(resolveRead('opener-prompt.md'), 'utf8');
   const user = `Draft a like-comment for this Hinge profile.\n\n${profileText}`;
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -872,7 +890,7 @@ async function commentAndSend(line, kind) {
 
 function relPhoto(abs) {
   if (!abs) return '';
-  return path.relative(__dirname, path.resolve(abs)).split(path.sep).join('/');
+  return path.relative(process.cwd(), path.resolve(abs)).split(path.sep).join('/');
 }
 function keepPhoto(src, id) {
   if (!src || !id || !fs.existsSync(src)) return '';
@@ -900,10 +918,14 @@ function fieldForLog(card, target) {
 }
 // Append one object between /*ROWS_START*/ and /*ROWS_END*/ in hinge-log.html.
 function appendLog(entry) {
-  const file = path.join(__dirname, 'hinge-log.html');
+  // Always written next to the user. Seeded from the packaged empty template
+  // the first time, so a global install still has somewhere to log.
+  const file = userFile('hinge-log.html');
   let html;
-  try { html = fs.readFileSync(file, 'utf8'); }
-  catch (e) { log(`! log skipped — ${e.message.split('\n')[0]}`); return; }
+  try {
+    if (!fs.existsSync(file)) fs.copyFileSync(pkgFile('hinge-log.html'), file);
+    html = fs.readFileSync(file, 'utf8');
+  } catch (e) { log(`! log skipped — ${e.message.split('\n')[0]}`); return; }
   const marker = '/*ROWS_END*/';
   const i = html.indexOf(marker);
   if (i < 0) { log('! hinge-log.html missing /*ROWS_END*/ — not logged'); return; }
