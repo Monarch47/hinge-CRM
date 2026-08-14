@@ -21,8 +21,9 @@
  *   NUM_LIKES  how many to send            (default: no cap, or first CLI arg)
  *   MIN_GAP    min seconds between profiles (default 60 = 1 min)
  *   MAX_GAP    max seconds between profiles (default 300 = 5 min)
- *   SKIP_MIN   like this many then pass one, low end   (default 1)
- *   SKIP_MAX   ...high end                             (default 4)
+ *   SKIP_MIN   like this many then pass one, low end   (default 6)
+ *   SKIP_MAX   ...high end                             (default 12)
+ *              SKIP_MAX=0 disables passing entirely (likes every profile)
  *   DRY_RUN=1  self-test: sends nothing
  *   NO_LOCK=1  leave the screen on at exit (default: put it to sleep / lock)
  *   LOAD_TIMEOUT  ms to wait for a screen to load, for lag/slow net (default 12000)
@@ -57,8 +58,8 @@ const NUM     = (process.argv[2] || process.env.NUM_LIKES)
   ? parseInt(process.argv[2] || process.env.NUM_LIKES, 10) : Infinity;
 const MIN_GAP = parseFloat(process.env.MIN_GAP || '60');    // 1 min
 const MAX_GAP = parseFloat(process.env.MAX_GAP || '300');   // 5 min
-const SKIP_MIN = parseInt(process.env.SKIP_MIN || '1', 10);
-const SKIP_MAX = parseInt(process.env.SKIP_MAX || '4', 10);
+const SKIP_MIN = parseInt(process.env.SKIP_MIN || '6', 10);
+const SKIP_MAX = parseInt(process.env.SKIP_MAX || '12', 10);
 const DRY_RUN = process.env.DRY_RUN === '1';
 // How long to keep polling for a screen element before giving up (ms). Bump this
 // on a slow phone / bad network so slow-loading sheets don't get abandoned.
@@ -68,16 +69,6 @@ const SHOTS_DIR = process.env.SHOTS_DIR || 'screenshots';
 
 // --- the openers (a random one is used per profile) -----------------------
 const LINES = [
-  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
-  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
-  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
-  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
-  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
-  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
-  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
-  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
-  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
-  "Rate my Hinge profile tell me what to keep, change, or remove, and why???!!!",
   "I'm so sure you are in a happy secure relationship but idk how to prove it",
   "So I'm actually from the future where we have been married for 20 years. I came back to settle an argument over when and where our first date was.",
   "I lost my watch at a party once. An hour later saw some guy stepping on it while he was harassing some woman at that party. Infuriated, I immediately went over, punched him and broke his nose. No one does that to a woman, not on my watch",
@@ -346,9 +337,11 @@ async function main() {
   if (!devs.length) { log('No authorized device — check `adb devices`.'); process.exit(1); }
   if (!TARGET) TARGET = devs[0];                  // avoid "more than one device" when USB+wifi both attached
 
-  log(`device ${TARGET} | target ${NUM === Infinity ? '∞ (no cap)' : NUM} | gap ${MIN_GAP}-${MAX_GAP}s | pass ~1 of every ${SKIP_MIN}-${SKIP_MAX} | ${DRY_RUN ? 'DRY RUN — sends nothing' : 'LIVE'}`);
+  log(`device ${TARGET} | target ${NUM === Infinity ? '∞ (no cap)' : NUM} | gap ${MIN_GAP}-${MAX_GAP}s | ${SKIP_MAX <= 0 ? 'no passing' : `pass 1 after every ${SKIP_MIN}-${SKIP_MAX} likes`} |${DRY_RUN ? 'DRY RUN — sends nothing' : 'LIVE'}`);
 
-  const nextRun = () => SKIP_MIN + Math.floor(Math.random() * (SKIP_MAX - SKIP_MIN + 1));
+  // SKIP_MAX=0 → never pass; otherwise like SKIP_MIN..SKIP_MAX profiles, then pass one.
+  const nextRun = () => SKIP_MAX <= 0 ? Infinity
+    : SKIP_MIN + Math.floor(Math.random() * (SKIP_MAX - SKIP_MIN + 1));
   let likesBeforeSkip = nextRun();
   let sent = 0, passed = 0, errors = 0, consecErr = 0;
 
