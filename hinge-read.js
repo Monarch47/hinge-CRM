@@ -69,6 +69,52 @@ const delay = ms => new Promise(r => setTimeout(r, ms));
 const rand  = (a, b) => a + Math.random() * (b - a);
 const log   = (...a) => console.log(`[${new Date().toLocaleTimeString()}]`, ...a);
 
+/* ---- debug journal -------------------------------------------------------
+ * One JSONL file per run under logs/ (gitignored — it holds scraped profile
+ * text and full screen dumps). Console stays readable; everything else lands
+ * here so a failure can be reconstructed afterwards.
+ * LOG_DIR=  where to write        DEBUG_LOG=0  turn it off
+ */
+const LOG_DIR = process.env.LOG_DIR || 'logs';
+const DEBUG_LOG = process.env.DEBUG_LOG !== '0';
+const RUN_ID = new Date().toISOString().replace('T', '_').replace(/[:.]/g, '-').slice(0, 19);
+let LOG_FILE = null;
+let LAST_XML = '';        // most recent dump, so failures can log the screen
+let PROFILE_N = 0;
+function dbg(event, data = {}) {
+  if (!DEBUG_LOG) return;
+  try {
+    if (!LOG_FILE) {
+      fs.mkdirSync(LOG_DIR, { recursive: true });
+      LOG_FILE = path.join(LOG_DIR, `run-${RUN_ID}.jsonl`);
+    }
+    fs.appendFileSync(LOG_FILE, JSON.stringify({ t: new Date().toISOString(), profile: PROFILE_N, event, ...data }) + '\n');
+  } catch (_) {}
+}
+// Everything currently on screen, flattened — the bit that actually explains
+// "why did it stop here".
+function screenNodes(xml) {
+  if (!xml) return [];
+  try {
+    return allNodes(xml).map(n => ({
+      cls: n.cls, desc: n.desc || undefined, text: n.text || undefined,
+      b: [n.left, n.top, n.right, n.bot],
+    }));
+  } catch (_) { return []; }
+}
+function dbgFail(event, data = {}) {
+  const xml = LAST_XML;
+  let raw = '';
+  if (DEBUG_LOG && xml) {
+    try {
+      fs.mkdirSync(LOG_DIR, { recursive: true });
+      raw = path.join(LOG_DIR, `run-${RUN_ID}-p${PROFILE_N}-${event}.xml`);
+      fs.writeFileSync(raw, xml);
+    } catch (_) { raw = ''; }
+  }
+  dbg(event, { ...data, ok: false, xmlFile: raw || undefined, screen: screenNodes(xml) });
+}
+
 function loadEnv() {
   const file = path.join(__dirname, '.env');
   if (!fs.existsSync(file)) return;
@@ -84,7 +130,7 @@ function loadEnv() {
   }
 }
 
-function adb(args, wantOut = false, timeoutMs = 0) {
+function adbOnce(args, wantOut = false, timeoutMs = 0) {
   const full = TARGET ? ['-s', TARGET, ...args] : args;
   try {
     return execFileSync(ADB, full, {
@@ -99,6 +145,20 @@ function adb(args, wantOut = false, timeoutMs = 0) {
     throw e;
   }
 }
+// Wi-Fi adb drops out on its own (screen off, roaming, doze). One silent
+// reconnect beats losing a whole run.
+const DROPPED = /device\s+'?[^']*'?\s+(?:not found|offline)|device offline|no devices\/emulators found|closed/i;
+function adb(args, wantOut = false, timeoutMs = 0) {
+  try {
+    return adbOnce(args, wantOut, timeoutMs);
+  } catch (e) {
+    if (!TARGET.includes(':') || !DROPPED.test(e.message)) throw e;
+    try {
+      execFileSync(ADB, ['connect', TARGET], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 8000 });
+    } catch (_) {}
+    return adbOnce(args, wantOut, timeoutMs);
+  }
+}
 const wake = () => { try { adb(['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP']); } catch (_) {} };
 const sleepScreen = () => { try { adb(['shell', 'input', 'keyevent', 'KEYCODE_SLEEP']); } catch (_) {} };
 const tap = (x, y) => adb(['shell', 'input', 'tap', `${Math.round(x)}`, `${Math.round(y)}`]);
@@ -106,6 +166,30 @@ const back = () => { try { adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK']); 
 const swipe = (x1, y1, x2, y2, d = 450) =>
   adb(['shell', 'input', 'swipe', ...[x1, y1, x2, y2, d].map(v => `${Math.round(v)}`)]);
 
+// Grep on the device — a full `dumpsys window` is megabytes over Wi-Fi.
+const keyguardUp = () => {
+  try {
+    return /isKeyguardShowing=true|mShowingLockscreen=true/.test(
+      adb(['shell', 'dumpsys window | grep -iE "isKeyguardShowing|mShowingLockscreen"'], true, 8000));
+  } catch (_) { return false; }
+};
+// The screen times out mid-run and `wm dismiss-keyguard` alone does not clear
+// a swipe lock, so swipe it away and confirm. Without this the run just sees
+// "no profile controls" and quits.
+async function unlock() {
+  wake();
+  try { adb(['shell', 'wm', 'dismiss-keyguard']); } catch (_) {}
+  await delay(400);
+  let up = keyguardUp();
+  for (let i = 0; i < 3 && up; i++) {
+    const { w, h } = screenSize();
+    try { swipe(w / 2, h * 0.80, w / 2, h * 0.25, 300); } catch (_) {}
+    await delay(600);
+    up = keyguardUp();
+  }
+  if (up) { log('Screen is locked and needs a PIN — unlock the phone'); dbg('keyguard-stuck'); }
+  return !up;
+}
 function launchHinge() {
   wake();
   try { adb(['shell', 'wm', 'dismiss-keyguard']); } catch (_) {}
@@ -122,11 +206,16 @@ function screenSize() {
   SCREEN = SCREEN || { w: 1080, h: 2400 };
   return SCREEN;
 }
+// Travels 46% of the viewport per swipe, up from 32%. Anything under 100%
+// still shows every pixel in some dump, so coverage is unchanged — but it
+// takes ~a third fewer dumps to read a profile, and a dump costs 2.6s.
+// Duration scales with the distance so the fling velocity stays the same,
+// which is what keeps the swipe-from-top index reproducible.
 function swipeProfile(dir) {
   const { w, h } = screenSize();
-  const x = w / 2, a = h * 0.70, b = h * 0.38;
-  if (dir === 'down') swipe(x, a, x, b, 420);
-  else                swipe(x, b, x, a, 420);
+  const x = w / 2, a = h * 0.76, b = h * 0.30;
+  if (dir === 'down') swipe(x, a, x, b, 600);
+  else                swipe(x, b, x, a, 600);
 }
 
 const stamp = () => new Date().toISOString().replace('T', '_').replace(/[:.]/g, '-').slice(0, 19);
@@ -221,21 +310,33 @@ function hasAdbKeyboard() {
 function typeViaAdbKeyboard(text) {
   let prev = '';
   try { prev = adb(['shell', 'settings', 'get', 'secure', 'default_input_method'], true).trim(); } catch (_) {}
-  adb(['shell', 'ime', 'enable', 'com.android.adbkeyboard/.AdbIME']);
-  adb(['shell', 'ime', 'set', 'com.android.adbkeyboard/.AdbIME']);
-  adb(['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_B64', '--es', 'msg', Buffer.from(text, 'utf8').toString('base64')]);
-  if (prev && !/adbkeyboard/.test(prev)) adb(['shell', 'ime', 'set', prev]);
+  try {
+    adb(['shell', 'ime', 'enable', 'com.android.adbkeyboard/.AdbIME']);
+    adb(['shell', 'ime', 'set', 'com.android.adbkeyboard/.AdbIME']);
+    adb(['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_B64', '--es', 'msg', Buffer.from(text, 'utf8').toString('base64')]);
+  } finally {
+    // Always hand the keyboard back, even if the broadcast blew up.
+    if (prev && !/adbkeyboard/.test(prev)) { try { adb(['shell', 'ime', 'set', prev]); } catch (_) {} }
+  }
+}
+// `adb shell input text …` is re-parsed by the device's sh, so a bare `;`
+// ends the command and `'` opens a quote. Backslash-escape every shell
+// metachar. Runs after the input-text encoding (%%, %s) so those survive.
+const SH_META = /[\\;'"&|()<>$`*?~!#[\]{}^\n\t ]/g;
+function encodeForInputText(s) {
+  return s.replace(/%/g, '%%').replace(/ /g, '%s').replace(SH_META, c => '\\' + c);
 }
 function typeViaInputText(text) {
   const CHUNK = 90;
   for (let i = 0; i < text.length; i += CHUNK) {
-    const piece = text.slice(i, i + CHUNK).replace(/%/g, '%%').replace(/ /g, '%s').replace(/'/g, "\\'");
-    adb(['shell', 'input', 'text', piece]);
+    adb(['shell', 'input', 'text', encodeForInputText(text.slice(i, i + CHUNK))]);
   }
 }
 function typeText(text) {
   const raw = String(text);
-  if (hasAdbKeyboard() && (/[^\x20-\x7E]/.test(raw) || EMOJI.test(raw))) {
+  // ADBKeyboard goes over a base64 broadcast — no shell, no escaping, keeps
+  // Unicode. Prefer it for every line, not just the ones with emoji.
+  if (hasAdbKeyboard()) {
     typeViaAdbKeyboard(raw);
     return;
   }
@@ -260,15 +361,21 @@ function attr(attrs, name) {
   return m ? unescapeXml(m[1]) : '';
 }
 
+// exec-out to /dev/tty and dump-to-file+cat benchmarked the same on this
+// device (~2.6s either way — it is uiautomator that is slow, not the
+// transfer), so keep the dump+cat path that is known to behave.
 async function getUI() {
   for (let i = 0; i < 4; i++) {
     try {
       adb(['shell', 'uiautomator', 'dump', '/sdcard/hinge_ui.xml'], false, 8000);
       const xml = adb(['shell', 'cat', '/sdcard/hinge_ui.xml'], true, 5000);
-      if (xml && xml.includes('<hierarchy')) return xml;
-    } catch (_) {}
+      if (xml && xml.includes('<hierarchy')) { LAST_XML = xml; return xml; }
+    } catch (e) {
+      dbg('getUI-retry', { try: i + 1, err: e.message.split('\n')[0] });
+    }
     await delay(700);
   }
+  dbg('getUI-failed');
   return '';
 }
 function allNodes(xml) {
@@ -349,6 +456,8 @@ function isJunkText(s) {
   s = String(s || '').trim();
   return isControlLabel(s) || PRONOUN_BIT.test(s);
 }
+// Card kinds that carry their own Like heart, so they can be hooked.
+const LIKEABLE = /^(prompt|voice|video|choice)$/;
 const VITAL = /^(Age|Gender|Sexuality|Religion|Ethnicity|Height|Location|Job|Education|Hometown|Politics|Drinking|Smoking|Cannabis|Kids|Family Plans|Pets|Zodiac|Languages|School|Work|Dating Intentions|Relationship type|Looking for|Family plans|Children|Covid vaccine|Pets)$/i;
 
 function isChrome(n) {
@@ -372,14 +481,22 @@ function parsePrompt(desc) {
 function atProfileTop(xml) {
   return findDesc(xml, /^(Dating preferences|Age filter options)$/).length > 0;
 }
+// A swipe costs ~0.5s, a UI dump ~2.6s. Swipe blind to the top first and
+// confirm with a single dump, instead of dumping before every swipe.
 async function scrollToTop() {
-  for (let i = 0; i < 14; i++) {
-    const xml = await getUI();
-    if (xml && atProfileTop(xml)) return xml;
+  for (let i = 0; i < 8; i++) {
     swipeProfile('up');
-    await delay(400);
+    await delay(180);
   }
-  return getUI();
+  let xml = await getUI();
+  if (xml && atProfileTop(xml)) return xml;
+  for (let i = 0; i < 6; i++) {
+    swipeProfile('up');
+    await delay(250);
+    xml = await getUI();
+    if (xml && atProfileTop(xml)) return xml;
+  }
+  return xml || getUI();
 }
 
 function harvest(xml) {
@@ -578,6 +695,7 @@ function labeledCards(p) {
         q: it.q || '',
         a: it.a || (it.opts ? it.opts.join(' | ') : ''),
         raw: it.raw || '',
+        swipeAt: it.likeSwipe !== undefined ? it.likeSwipe : it.swipe,
       });
     }
   }
@@ -654,35 +772,65 @@ function pickFallbackLike(xml) {
   return null;
 }
 
-async function findLikeTarget(card) {
-  await scrollToTop();
-  let xml = await getUI();
+// opts.alreadyAtTop — caller has just scrolled to the top, skip doing it again.
+// opts.swipeAt     — swipe count from the top where this card's Like heart was
+//                    reachable during the scrape. Blind-swipe straight there
+//                    and dump once, instead of dumping down the whole profile.
+// Coordinates captured during the scrape are never reused — they are stale the
+// moment anything scrolls, so every tap target comes from a fresh dump.
+async function findLikeTarget(card, opts = {}) {
   const tryHook = (xml) => {
-    if (!card) return null;
+    if (!card || !xml) return null;
     const node = allNodes(xml).find(n => blobMatchesCard(`${n.desc} ${n.text}`, card));
     if (!node) return null;
     const like = likeForCard(xml, node);
     return like ? { like, how: card.label, desc: like.desc } : null;
   };
 
+  let xml = null;
+  const jumpTo = card && Number.isInteger(opts.swipeAt) ? opts.swipeAt : null;
+  if (jumpTo !== null) {
+    if (!opts.alreadyAtTop) await scrollToTop();
+    for (let i = 0; i < jumpTo; i++) {
+      swipeProfile('down');
+      await delay(200);
+    }
+    xml = await getUI();
+    let hit = tryHook(xml);
+    if (hit) { dbg('fast-jump', { swipeAt: jumpTo, nudges: 0, hit: true }); return hit; }
+    // Landing can be off by a screen — nudge rather than restart.
+    for (let i = 0; i < 3; i++) {
+      swipeProfile('down');
+      await delay(200);
+      xml = await getUI();
+      hit = tryHook(xml);
+      if (hit) { dbg('fast-jump', { swipeAt: jumpTo, nudges: i + 1, hit: true }); return hit; }
+    }
+    log('Fast jump missed — walking the profile');
+    dbg('fast-jump', { swipeAt: jumpTo, nudges: 3, hit: false });
+    xml = await scrollToTop();
+  } else {
+    xml = opts.alreadyAtTop ? await getUI() : await scrollToTop();
+  }
+
   let hit = tryHook(xml);
   if (hit) return hit;
   for (let i = 0; i < 16; i++) {
     swipeProfile('down');
-    await delay(450);
+    await delay(200);
     xml = await getUI();
     hit = tryHook(xml);
     if (hit) return hit;
   }
 
   log('Hook card not on screen — falling back to first likeable card');
-  await scrollToTop();
-  xml = await getUI();
+  dbgFail('hook-not-found', { card: card ? { label: card.label, q: card.q, swipeAt: card.swipeAt } : null });
+  xml = await scrollToTop();
   for (let i = 0; i < 12; i++) {
     const like = pickFallbackLike(xml);
     if (like) return { like, how: `fallback ${like.desc}`, desc: like.desc };
     swipeProfile('down');
-    await delay(400);
+    await delay(200);
     xml = await getUI();
   }
   return null;
@@ -692,6 +840,7 @@ async function commentAndSend(line, kind) {
   const boxHit = await waitFor(/^(Edit comment|Add a comment)$/);
   if (!boxHit) {
     log('No comment field');
+    dbgFail('no-comment-field', { kind });
     return false;
   }
   tap(boxHit.nodes[0].cx, boxHit.nodes[0].cy);
@@ -700,6 +849,7 @@ async function commentAndSend(line, kind) {
     typeText(line);
   } catch (e) {
     log(`Type failed — ${e.message.split('\n')[0]}`);
+    dbgFail('type-failed', { err: e.message, line, via: hasAdbKeyboard() ? 'adbkeyboard' : 'input-text' });
     return false;
   }
   await delay(rand(700, 1200));
@@ -708,6 +858,7 @@ async function commentAndSend(line, kind) {
   const send = sendHit && sendHit.nodes.filter(n => !/rose/i.test(n.desc))[0];
   if (!send) {
     log('Send button missing');
+    dbgFail('send-button-missing', { kind });
     return false;
   }
   if (DRY_RUN) {
@@ -775,9 +926,11 @@ function appendLog(entry) {
   log(`Logged ${row.name} → hinge-log.html`);
 }
 
-async function readProfile() {
+// seedXml: the dump waitForProfile already took. A fresh card opens at the
+// top, so reuse it rather than paying a scroll-to-top that does nothing.
+async function readProfile(seedXml) {
   log('Reading profile — scrolling for every card type');
-  let xml = await scrollToTop();
+  let xml = seedXml && atProfileTop(seedXml) ? seedXml : await scrollToTop();
   const photo = captureFirstPhoto(xml, profileName(xml));
   const items = [];
   const seen = new Set();
@@ -785,7 +938,7 @@ async function readProfile() {
   let pronouns = '';
   let stale = 0;
 
-  const absorb = (src) => {
+  const absorb = (src, at) => {
     let added = 0;
     if (src.who && !who) who = src.who;
     for (const it of src.items) {
@@ -795,18 +948,34 @@ async function readProfile() {
       const k = `${it.kind}|${it.raw || it.q}|${it.a || ''}`;
       if (seen.has(k)) continue;
       seen.add(k);
+      if (LIKEABLE.test(it.kind)) it.swipe = at;
       items.push(it);
       if (it.kind !== 'raw') added++;
     }
     return added;
   };
 
-  absorb(harvest(xml));
+  // A card is often on screen a swipe before its Like heart enters the
+  // tappable band, so remember the swipe where the heart was actually
+  // reachable — that is the one findLikeTarget jumps back to.
+  const noteLikeSwipe = (xml, at) => {
+    const pending = items.filter(it => LIKEABLE.test(it.kind) && it.likeSwipe === undefined);
+    if (!pending.length) return;
+    const nodes = allNodes(xml);
+    for (const it of pending) {
+      const node = nodes.find(n => it.raw && (n.desc === it.raw || n.text === it.raw));
+      if (node && likeForCard(xml, node)) it.likeSwipe = at;
+    }
+  };
+
+  absorb(harvest(xml), 0);
+  noteLikeSwipe(xml, 0);
   for (let i = 0; i < 18 && stale < 2; i++) {
     swipeProfile('down');
-    await delay(500);
+    await delay(200);
     xml = await getUI();
-    const n = absorb(harvest(xml));
+    const n = absorb(harvest(xml), i + 1);
+    noteLikeSwipe(xml, i + 1);
     stale = n ? 0 : stale + 1;
     if (VERBOSE) log(`  screen ${i + 1}: +${n} new`);
   }
@@ -817,17 +986,29 @@ async function waitForProfile() {
   let hit = await waitFor(/^(Like |Skip )/);
   for (let t = 0; !hit && t < 2; t++) {
     log('No profile controls yet — scrolling');
+    // Could be a locked screen rather than an empty feed — cheap to rule out.
+    if (t === 0) await unlock();
     swipeProfile('down');
     hit = await waitFor(/^(Like |Skip )/, 4000);
   }
+  if (!hit) dbgFail('no-profile-controls');
   return hit;
 }
 
 async function skipProfile() {
-  const xml = await getUI();
-  const sk = findDesc(xml, /^Skip /)[0];
+  let xml = await getUI();
+  let sk = findDesc(xml, /^Skip /)[0];
+  // Skip is a floating control — if it is missing we are usually mid-scroll
+  // or a sheet is still settling, not out of cards. Give it a few tries.
+  for (let i = 0; !sk && i < 3; i++) {
+    swipeProfile('up');
+    await delay(450);
+    xml = await getUI();
+    sk = findDesc(xml, /^Skip /)[0];
+  }
   if (!sk) {
     log('Skip button missing');
+    dbgFail('skip-button-missing');
     return false;
   }
   log(`Skipping ${profileName(xml) || sk.desc.replace(/^Skip\s+/i, '') || 'someone'}`);
@@ -835,32 +1016,79 @@ async function skipProfile() {
   return true;
 }
 
+// The like/comment sheet. Two blind backs used to over- or under-shoot;
+// back only while the sheet is actually still up.
+const SHEET_RE = /^(Edit comment|Add a comment|Send (priority )?like( with message)?)$/i;
 async function bailSheet() {
-  back();
-  await delay(500);
-  back();
-  await delay(400);
+  for (let i = 0; i < 4; i++) {
+    const xml = await getUI();
+    if (!xml || !findDesc(xml, SHEET_RE).length) return true;
+    back();
+    await delay(550);
+  }
+  log('Comment sheet would not close');
+  dbgFail('sheet-stuck');
+  return false;
+}
+// Close whatever is on top and get back to a card with Like/Skip on it.
+async function recoverToFeed() {
+  await bailSheet();
+  let hit = await waitFor(/^(Like |Skip )/, 6000);
+  for (let t = 0; !hit && t < 2; t++) {
+    swipeProfile('up');
+    await delay(450);
+    hit = await waitFor(/^(Like |Skip )/, 4000);
+  }
+  return !!hit;
+}
+
+function logTiming(t0, T) {
+  const s = ms => `${(ms / 1000).toFixed(1)}s`;
+  const parts = ['scrape', 'draft', 'find', 'send']
+    .filter(k => T[k] !== undefined)
+    .map(k => `${k} ${s(T[k])}`);
+  log(`timing  ${s(Date.now() - t0)} total${parts.length ? `  ·  ${parts.join('  ·  ')}` : ''}`);
 }
 
 async function handleOneProfile() {
+  const t0 = Date.now();
+  const T = {};
+  PROFILE_N++;
+  dbg('profile-start');
   const hit = await waitForProfile();
-  if (!hit) return 'none';
+  if (!hit) { dbg('outcome', { result: 'none' }); return 'none'; }
 
-  const profile = await readProfile();
+  let mark = Date.now();
+  const profile = await readProfile(hit.xml);
   const dump = formatProfile(profile);
   process.stdout.write(dump + '\n');
+  T.scrape = Date.now() - mark;
+  dbg('scraped', {
+    who: profile.who, age: profileAge(profile), ms: T.scrape,
+    text: dump,
+    items: profile.items.filter(it => it.kind !== 'raw'),
+  });
 
-  if (NODRAFT) return 'scraped';
+  if (NODRAFT) { logTiming(t0, T); dbg('outcome', { result: 'scraped', T }); return 'scraped'; }
 
-  let draft;
-  try {
-    log(`Drafting with ${MODEL}`);
-    draft = await draftOpener(dump);
-  } catch (e) {
-    log(`Draft failed — ${e.message.split('\n')[0]}`);
+  // The scrape ends at the bottom of the profile and the model takes a few
+  // seconds — fire the request first, then scroll back up while it is in
+  // flight instead of doing the two one after the other.
+  mark = Date.now();
+  log(`Drafting with ${MODEL}`);
+  const pending = draftOpener(dump).then(d => ({ d }), e => ({ e }));
+  await scrollToTop();
+  const got = await pending;
+  T.draft = Date.now() - mark;
+  if (got.e) {
+    log(`Draft failed — ${got.e.message.split('\n')[0]}`);
+    dbgFail('draft-failed', { err: got.e.message, model: MODEL, ms: T.draft });
     await skipProfile();
+    logTiming(t0, T);
+    dbg('outcome', { result: 'failed', why: 'draft', T });
     return 'failed';
   }
+  const draft = got.d;
   log(`hook  ${draft.hook || '(none)'}`);
   log(`${draft.chars} chars`);
   console.log(draft.line);
@@ -869,17 +1097,34 @@ async function handleOneProfile() {
   const card = resolveHook(draft.hook, cards);
   if (card) log(`Looking for ${card.label}: ${card.q}${card.a ? ' / ' + card.a : ''}`);
   else log('Hook did not match a card — will like whatever is on screen');
+  dbg('drafted', {
+    ms: T.draft, hook: draft.hook, chars: draft.chars, line: draft.line,
+    matched: card ? { label: card.label, swipeAt: card.swipeAt } : null,
+    cards: cards.map(c => ({ label: c.label, swipeAt: c.swipeAt, q: c.q, a: c.a })),
+  });
 
-  const target = await findLikeTarget(card);
+  mark = Date.now();
+  const target = await findLikeTarget(card, {
+    alreadyAtTop: true,
+    swipeAt: card ? card.swipeAt : undefined,
+  });
+  T.find = Date.now() - mark;
   if (!target) {
     log('No like button found — skipping');
+    dbgFail('no-like-button', { ms: T.find, card: card ? card.label : null });
     await skipProfile();
+    logTiming(t0, T);
+    dbg('outcome', { result: 'failed', why: 'no-like-button', T });
     return 'failed';
   }
+  dbg('found-target', { ms: T.find, how: target.how, desc: target.desc, at: [target.like.cx, target.like.cy] });
   log(`Tapping ${target.desc} (${target.how})`);
+  mark = Date.now();
   tap(target.like.cx, target.like.cy);
   await delay(rand(700, 1200));
   const ok = await commentAndSend(draft.line, target.how);
+  T.send = Date.now() - mark;
+  logTiming(t0, T);
   if (ok) {
     appendLog({
       name: profile.who || 'someone',
@@ -888,12 +1133,21 @@ async function handleOneProfile() {
       message: draft.line,
       photo: profile.photo || '',
     });
+    dbg('outcome', { result: 'sent', how: target.how, line: draft.line, T });
     return 'sent';
   }
-  if (DRY_RUN) return 'dry';
+  if (DRY_RUN) {
+    // Nothing was sent — just close the sheet so the feed is usable after.
+    await bailSheet();
+    dbg('outcome', { result: 'dry', line: draft.line, T });
+    return 'dry';
+  }
   log('Send failed — backing out');
-  await bailSheet();
-  await skipProfile();
+  dbgFail('send-failed', { how: target.how, line: draft.line, ms: T.send });
+  const back = await recoverToFeed();
+  if (back) await skipProfile();
+  else log('Could not get back to the feed');
+  dbg('outcome', { result: 'failed', why: 'send', recovered: back, T });
   return 'failed';
 }
 
@@ -907,11 +1161,18 @@ async function main() {
   const cap = NUM === Infinity ? 'until profiles run out' : `${NUM} like${NUM === 1 ? '' : 's'} then stop`;
   const pass = SKIP_MAX <= 0 ? 'liking everyone' : `pass 1 after every ${SKIP_MIN}–${SKIP_MAX} likes`;
   log(`Connected to ${TARGET}`);
+  dbg('run-start', {
+    target: TARGET, model: MODEL, num: NUM === Infinity ? null : NUM,
+    dryRun: DRY_RUN, noDraft: NODRAFT, minGap: MIN_GAP, maxGap: MAX_GAP,
+    skipMin: SKIP_MIN, skipMax: SKIP_MAX, adbKeyboard: hasAdbKeyboard(),
+  });
+  if (DEBUG_LOG) log(`Debug journal → ${path.join(LOG_DIR, `run-${RUN_ID}.jsonl`)}`);
   if (NODRAFT) log('scrape only — one profile, nothing sent');
   else if (DRY_RUN) log('dry-run — type on one profile, send nothing');
   else log(`${cap} · ${MIN_GAP}–${MAX_GAP}s between likes · ${pass}`);
 
   log('Opening Hinge');
+  await unlock();
   launchHinge();
   await delay(1200);
 
@@ -933,6 +1194,8 @@ async function main() {
     else if (result === 'scraped') log('Done — nothing sent');
     else if (result === 'dry') log('Done — dry-run, nothing sent');
     else log('Done');
+    dbg('run-end', { result });
+    if (DEBUG_LOG && LOG_FILE) log(`Debug journal → ${LOG_FILE}`);
     return;
   }
 
@@ -942,7 +1205,7 @@ async function main() {
   let likesBeforeSkip = nextRun();
   let sent = 0, passed = 0, errors = 0, consecErr = 0;
   while (sent < NUM) {
-    wake();
+    await unlock();
     if (likesBeforeSkip <= 0) {
       const hit = await waitForProfile();
       if (!hit) {
@@ -955,7 +1218,16 @@ async function main() {
       continue;
     }
 
-    const result = await handleOneProfile();
+    // A thrown adb/parse error is one bad profile, not the end of the run.
+    let result;
+    try {
+      result = await handleOneProfile();
+    } catch (e) {
+      log(`Profile failed — ${e.message.split('\n')[0]}`);
+      dbgFail('threw', { err: e.message, stack: e.stack });
+      try { await recoverToFeed(); } catch (_) {}
+      result = 'failed';
+    }
     if (result === 'none') {
       log('Stopped — no profile on screen (out of cards, a popup, or paywall).');
       break;
@@ -981,6 +1253,8 @@ async function main() {
   if (passed) bits.push(`${passed} skipped`);
   if (errors) bits.push(`${errors} failed`);
   log(`Done — ${bits.join(', ')}`);
+  dbg('run-end', { sent, passed, errors });
+  if (DEBUG_LOG && LOG_FILE) log(`Debug journal → ${LOG_FILE}`);
 }
 
 let locked = false;
@@ -995,7 +1269,11 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
 
 function boot() {
   return main()
-    .catch(e => { console.error('Fatal:', e.message); process.exitCode = 1; })
+    .catch(e => {
+      console.error('Fatal:', e.message);
+      dbgFail('fatal', { err: e.message, stack: e.stack });
+      process.exitCode = 1;
+    })
     .finally(() => { lockScreen(); });
 }
 if (require.main === module) boot();

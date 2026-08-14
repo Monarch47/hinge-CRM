@@ -15,9 +15,12 @@ hinge_*.png
 /screenshots/
 /screenshots_cropped/
 collage_*.jpg
+hinge-log.html
 
 # Local, private outreach data (should never be shared)
 hinge-log.data.json
+# Debug run logs — contain scraped profile text and full UI dumps.
+/logs/
 
 # OS
 .DS_Store
