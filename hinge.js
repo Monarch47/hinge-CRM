@@ -12,9 +12,15 @@
  *   DRY_RUN=1 node hinge.js            # type, don't send (one profile)
  *   SERIAL=192.168.29.4:5555 node hinge.js
  *   NO_LOCK=1 node hinge.js            # leave the screen on at exit
+ *   NO_DIM=1  node hinge.js            # leave the screen brightness alone
+ *
+ * The screen is dimmed for the run and put back however it ends. Typing
+ * borrows ADBKeyboard and hands the keyboard back to yours (Gboard if it
+ * can't tell) — no shell helper needed.
  *
  * Env vars: same as hinge-opener.js (NUM_LIKES, MIN_GAP, MAX_GAP,
- * SKIP_MIN, SKIP_MAX, DRY_RUN, NO_LOCK, LOAD_TIMEOUT, SHOTS_DIR, ADB, SERIAL).
+ * SKIP_MIN, SKIP_MAX, DRY_RUN, NO_LOCK, NO_DIM, DIM_LEVEL, KEYBOARD_IME,
+ * LOAD_TIMEOUT, SHOTS_DIR, ADB, SERIAL).
  */
 'use strict';
 require('./hinge-read.js').boot();

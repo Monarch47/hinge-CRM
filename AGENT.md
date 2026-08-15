@@ -32,7 +32,7 @@ Reply strategist + ADB operator. For each profile: **capture → analyze → dra
 
 Two paths, picked automatically by `typeText()`:
 
-- **ADBKeyboard installed** (`com.android.adbkeyboard`) — non-ASCII lines go out base64 over `ADB_INPUT_B64`, so real emoji and accents work. The tools save the current IME, switch, send, and switch back. Install steps: [docs/setup.md](docs/setup.md#6-adbkeyboard-optional--unicode--emoji-openers).
+- **ADBKeyboard installed** (`com.android.adbkeyboard`) — non-ASCII lines go out base64 over `ADB_INPUT_B64`, so real emoji and accents work. The tools save the current IME, switch, send, and switch back — never to ADBKeyboard or the TTS voice IME, falling back to Gboard (`KEYBOARD_IME` overrides). Install steps: [docs/setup.md](docs/setup.md#6-adbkeyboard-optional--unicode--emoji-openers).
 - **Not installed** — the line is folded to ASCII (homoglyphs mapped, unmappable chars dropped and logged). Stick to **text emoticons** here: `:)` `:P` `:0` `:')` `;)` `:D`.
 
 Prefer emoticons when you are unsure which path a machine is on — they render identically either way.

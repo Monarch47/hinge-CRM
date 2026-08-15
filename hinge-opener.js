@@ -26,6 +26,9 @@
  *   SKIP_MAX   ...high end                             (default 0 = never pass)
  *   DRY_RUN=1  self-test: sends nothing
  *   NO_LOCK=1  leave the screen on at exit (default: put it to sleep / lock)
+ *   NO_DIM=1   don't touch screen brightness (default: dim for the run, restore at exit)
+ *   DIM_LEVEL  brightness to hold during the run (default 0)
+ *   KEYBOARD_IME  IME to restore after typing (default: yours, else Gboard)
  *   LOAD_TIMEOUT  ms to wait for a screen to load, for lag/slow net (default 12000)
  *   SHOTS_DIR  folder for send-sheet screenshots  (default screenshots/)
  *   ADB        path to adb                 (default: auto-detect via $PATH + common spots)
@@ -250,13 +253,40 @@ function hasAdbKeyboard() {
   catch (_) { _hasAdbKb = false; }
   return _hasAdbKb;
 }
+// Never restore these: ADBKeyboard itself, and the TTS voice IME — Android
+// reports the mic keyboard as "current" whenever a real one isn't selected,
+// and blindly restoring it leaves you stuck typing by voice.
+const IME_ADBKB = 'com.android.adbkeyboard/.AdbIME';
+const IME_GBOARD = 'com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME';
+const IME_BAD = /adbkeyboard|googletts|voiceime|speech/i;
+
+// The keyboard to hand control back to after typing. Explicit KEYBOARD_IME
+// wins; otherwise whatever was really selected, then Gboard, then the first
+// enabled keyboard that isn't a bad one.
+function restoreTargetIme(prev) {
+  if (process.env.KEYBOARD_IME) return process.env.KEYBOARD_IME;
+  if (prev && prev !== 'null' && !IME_BAD.test(prev)) return prev;
+  let enabled = [];
+  try {
+    enabled = adb(['shell', 'ime', 'list', '-s'], true).split('\n')
+      .map(s => s.trim()).filter(s => s && !IME_BAD.test(s));
+  } catch (_) {}
+  if (enabled.includes(IME_GBOARD)) return IME_GBOARD;
+  return enabled[0] || IME_GBOARD;
+}
+
 function typeViaAdbKeyboard(text) {
   let prev = '';
   try { prev = adb(['shell', 'settings', 'get', 'secure', 'default_input_method'], true).trim(); } catch (_) {}
-  adb(['shell', 'ime', 'enable', 'com.android.adbkeyboard/.AdbIME']);
-  adb(['shell', 'ime', 'set', 'com.android.adbkeyboard/.AdbIME']);
-  adb(['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_B64', '--es', 'msg', Buffer.from(text, 'utf8').toString('base64')]);
-  if (prev && !/adbkeyboard/.test(prev)) adb(['shell', 'ime', 'set', prev]);
+  const back = restoreTargetIme(prev);
+  try {
+    adb(['shell', 'ime', 'enable', IME_ADBKB]);
+    adb(['shell', 'ime', 'set', IME_ADBKB]);
+    adb(['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_B64', '--es', 'msg', Buffer.from(text, 'utf8').toString('base64')]);
+  } finally {
+    // Always hand the keyboard back, even if the broadcast blew up.
+    try { adb(['shell', 'ime', 'set', back]); } catch (_) {}
+  }
 }
 function typeViaInputText(text) {
   // Separate argv (no host-shell quoting). Spaces → %s, literal % → %%.
@@ -389,6 +419,7 @@ async function main() {
     .filter(l => /\tdevice$/.test(l)).map(l => l.split('\t')[0]);
   if (!devs.length) { log('No authorized device — check `adb devices`.'); process.exit(1); }
   if (!TARGET) TARGET = devs[0];                  // avoid "more than one device" when USB+wifi both attached
+  dimScreen();
 
   const cap = NUM === Infinity ? 'until profiles run out' : `${NUM} like${NUM === 1 ? '' : 's'} then stop`;
   const pass = SKIP_MAX <= 0 ? 'liking everyone' : `pass 1 after every ${SKIP_MIN}–${SKIP_MAX} likes`;
@@ -450,10 +481,90 @@ async function main() {
   if (errors) bits.push(`${errors} failed`);
   log(`Done — ${bits.join(', ')}${DRY_RUN ? ' (dry-run)' : ''}`);
 }
+
+/* ---- screen brightness ---------------------------------------------------
+ * The run drives the phone itself, so there's no reason for the panel to be
+ * lit up: drop it to the floor at boot and hand the user's own level back on
+ * the way out, whatever ends the run (done, fatal, Ctrl+C).
+ * NO_DIM=1 to skip, DIM_LEVEL= to pick the floor.
+ */
+const NO_DIM = process.env.NO_DIM === '1';
+const DIM_LEVEL = process.env.DIM_LEVEL || '0';
+const isLevel = v => /^\d+$/.test(v || '');
+let prevBrightness = null, prevBrightnessMode = null, dimmed = false, undimmed = false;
+
+function dimScreen() {
+  if (NO_DIM || dimmed) return;
+  dimmed = true;
+  try { prevBrightnessMode = adb(['shell', 'settings', 'get', 'system', 'screen_brightness_mode'], true).trim(); } catch (_) {}
+  try { prevBrightness = adb(['shell', 'settings', 'get', 'system', 'screen_brightness'], true).trim(); } catch (_) {}
+  try {
+    // Manual mode first — auto-brightness would fight the value straight back up.
+    adb(['shell', 'settings', 'put', 'system', 'screen_brightness_mode', '0']);
+    adb(['shell', 'settings', 'put', 'system', 'screen_brightness', DIM_LEVEL]);
+    log(`Screen dimmed to ${DIM_LEVEL}${isLevel(prevBrightness) ? ` (was ${prevBrightness})` : ''}`);
+  } catch (_) {}
+}
+
+// The setting is raw panel units, and the scale is per-device (0–255 on some,
+// 0–3663 on others), so a hardcoded "normal" number is meaningless. Ask the
+// display for its own ceiling instead. Only called on the fallback path —
+// `dumpsys display` is a big dump.
+function panelMaxBrightness() {
+  try {
+    const m = /mScreenBrightnessRangeMaximum=(\d+)/.exec(adb(['shell', 'dumpsys', 'display'], true, 8000));
+    if (m) return parseInt(m[1], 10);
+  } catch (_) {}
+  return 0;
+}
+
+function restoreBrightness() {
+  if (!dimmed || undimmed) return;
+  undimmed = true;
+  // Someone reached over and changed it mid-run — that beats our saved value.
+  let now = '';
+  try { now = adb(['shell', 'settings', 'get', 'system', 'screen_brightness'], true).trim(); } catch (_) {}
+  if (isLevel(now) && now !== DIM_LEVEL) {
+    log(`Screen brightness left at ${now} — changed during the run`);
+    return;
+  }
+  try {
+    if (isLevel(prevBrightness) && prevBrightness !== DIM_LEVEL) {
+      adb(['shell', 'settings', 'put', 'system', 'screen_brightness', prevBrightness]);
+      if (isLevel(prevBrightnessMode)) adb(['shell', 'settings', 'put', 'system', 'screen_brightness_mode', prevBrightnessMode]);
+      log(`Screen brightness restored to ${prevBrightness}`);
+      return;
+    }
+    // No usable saved level (unreadable, or a crashed run already left it on
+    // the floor). Pick something visible off the panel's own range, and fall
+    // back to auto-brightness if even that is unknown — anything but black.
+    const max = panelMaxBrightness();
+    if (max > 0) {
+      const level = String(Math.round(max * 0.4));
+      adb(['shell', 'settings', 'put', 'system', 'screen_brightness', level]);
+      log(`Screen brightness set to ${level} of ${max} — original level unknown`);
+    } else {
+      adb(['shell', 'settings', 'put', 'system', 'screen_brightness_mode', '1']);
+      log('Screen brightness handed to auto — original level unknown');
+    }
+  } catch (_) {}
+}
+
+let locked = false;
+function lockScreen() {
+  if (locked || process.env.NO_LOCK === '1') return;
+  locked = true;
+  try { log('Locking screen'); sleepScreen(); } catch (_) {}
+}
+function cleanup() { restoreBrightness(); lockScreen(); }
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => { cleanup(); process.exit(sig === 'SIGINT' ? 130 : 143); });
+}
+// Last resort — adb calls are execFileSync, so they still run on the way out.
+process.on('exit', restoreBrightness);
+
 main()
-  .catch(e => { console.error('Fatal:', e.message); process.exitCode = 1; })   // no process.exit — let the lock below run
+  .catch(e => { console.error('Fatal:', e.message); process.exitCode = 1; })   // no process.exit — let the cleanup below run
   .finally(() => {
-    if (process.env.NO_LOCK === '1') return;
-    log('Locking screen');
-    sleepScreen();
+    cleanup();
   });

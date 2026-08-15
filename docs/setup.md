@@ -67,7 +67,16 @@ adb shell settings get secure default_input_method
 present **and** the line contains non-ASCII, they save the current IME, switch to
 ADBKeyboard, send the text base64-encoded over `ADB_INPUT_B64`, then switch the
 previous IME back automatically. When it is absent they fall back to `input text`
-and log which characters were dropped. Nothing else needs configuring.
+and log which characters were dropped. Nothing else needs configuring — no shell
+helper or `~/.zshrc` function is involved.
+
+They never restore ADBKeyboard itself or the Google TTS *voice* IME, which Android
+reports as "current" whenever no real keyboard is selected — restoring that is how
+you end up stuck with the mic keyboard. If the saved IME is one of those, they fall
+back to Gboard
+(`com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME`),
+then to the first other enabled keyboard. Set `KEYBOARD_IME=<id>` to force a
+specific one.
 
 Gotchas:
 
@@ -79,20 +88,12 @@ Gotchas:
   `adb shell ime set com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME`
   (or pick your keyboard from the notification switcher).
 
-Handy for driving it by hand — drop in `~/.zshrc`:
+Driving it by hand, if you ever need to:
 
 ```bash
-adbkb() {
-  local ime="com.android.adbkeyboard/.AdbIME" state="$HOME/.adbkb_prev_ime"
-  case "$1" in
-    on)   adb shell settings get secure default_input_method | tr -d '\r' | grep -v adbkeyboard > "$state"
-          adb shell ime enable "$ime" && adb shell ime set "$ime" ;;
-    off)  adb shell ime set "$(cat "$state")" ;;
-    which) adb shell settings get secure default_input_method ;;
-    send) shift; adb shell am broadcast -a ADB_INPUT_B64 --es msg "$(printf '%s' "$*" | base64 | tr -d '\n')" ;;
-    *)    echo "adbkb {on|off|which|send <text>}" ;;
-  esac
-}
+adb shell ime set com.android.adbkeyboard/.AdbIME                  # take over
+adb shell am broadcast -a ADB_INPUT_B64 --es msg "$(printf '%s' 'hi 🙂' | base64)"
+adb shell ime set com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME  # give it back
 ```
 
 ## Notes
