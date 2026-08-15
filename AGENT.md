@@ -28,7 +28,14 @@ Reply strategist + ADB operator. For each profile: **capture → analyze → dra
 
 ## Text-input note
 
-`adb shell input text` is ASCII-only and chokes on Unicode emoji. Use **text emoticons** in openers instead: `:)` `:P` `:0` `:')` `;)` `:D`. Replace spaces with `%s` and escape shell-special characters when typing; verify the field before sending.
+`adb shell input text` is ASCII-only and chokes on Unicode emoji. Replace spaces with `%s` and escape shell-special characters when typing; verify the field before sending.
+
+Two paths, picked automatically by `typeText()`:
+
+- **ADBKeyboard installed** (`com.android.adbkeyboard`) — non-ASCII lines go out base64 over `ADB_INPUT_B64`, so real emoji and accents work. The tools save the current IME, switch, send, and switch back. Install steps: [docs/setup.md](docs/setup.md#6-adbkeyboard-optional--unicode--emoji-openers).
+- **Not installed** — the line is folded to ASCII (homoglyphs mapped, unmappable chars dropped and logged). Stick to **text emoticons** here: `:)` `:P` `:0` `:')` `;)` `:D`.
+
+Prefer emoticons when you are unsure which path a machine is on — they render identically either way.
 
 ## ADB cheatsheet
 
@@ -39,6 +46,7 @@ adb shell uiautomator dump /sdcard/ui.xml && adb shell cat /sdcard/ui.xml  # a11
 adb exec-out screencap -p > shot.png                                       # screenshot
 adb shell input tap X Y
 adb shell input text "your%stext%shere"                                    # ASCII only
+adb shell am broadcast -a ADB_INPUT_B64 --es msg "$(printf '%s' 'hi 🙂' | base64)"  # Unicode, needs ADBKeyboard
 adb shell input keyevent KEYCODE_BACK
 adb shell input swipe 540 1650 540 850 400                                 # scroll down
 ```
