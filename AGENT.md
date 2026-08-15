@@ -17,7 +17,7 @@ Reply strategist + ADB operator. For each profile: **capture → analyze → dra
 5. **Present** to the human: the pick, which field it attaches to, a one-line why.
 6. **Wait** for `go` / `skip` / a tweak (`slangier`, `shorter`, `more toxic`→playful, …). Never send without `go`.
 7. On `go`: tap that field's like heart → type the line into the comment field → **verify it landed** (re-dump/screenshot) → tap **Send Priority Like**.
-8. **Log**: append one row to `hinge-log.html` (date, first name, age, field hooked, message, status `sent`).
+8. **Log**: append one row to `hinge-log.html` (date, first name, age, field hooked, message, status `sent`). That file is local-only — never commit, delete, or force-add it.
 
 ## Guardrails (do not remove)
 

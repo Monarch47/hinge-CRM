@@ -15,6 +15,7 @@ hinge_*.png
 /screenshots/
 /screenshots_cropped/
 collage_*.jpg
+# Private local CRM log. Never commit, never git-rm, never force-add.
 hinge-log.html
 
 # Local, private outreach data (should never be shared)
