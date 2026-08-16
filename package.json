@@ -1,6 +1,6 @@
 {
   "name": "hinge-crm",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Hinge co-pilot driven over adb: scrape a profile, draft a like-comment with an LLM, type it onto the hooked card, log it, keep going. Needs adb + an Android device with USB debugging and an OpenAI API key.",
   "bin": {
     "hinge": "hinge.js",
