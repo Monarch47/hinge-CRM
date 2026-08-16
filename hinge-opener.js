@@ -28,7 +28,6 @@
  *   NO_LOCK=1  leave the screen on at exit (default: put it to sleep / lock)
  *   NO_DIM=1   don't touch screen brightness (default: dim for the run, restore at exit)
  *   DIM_LEVEL  brightness to hold during the run (default 0)
- *   KEYBOARD_IME  IME to restore after typing (default: yours, else Gboard)
  *   LOAD_TIMEOUT  ms to wait for a screen to load, for lag/slow net (default 12000)
  *   SHOTS_DIR  folder for send-sheet screenshots  (default screenshots/)
  *   ADB        path to adb                 (default: auto-detect via $PATH + common spots)
@@ -166,6 +165,16 @@ const delay = ms => new Promise(r => setTimeout(r, ms));
 const rand  = (a, b) => a + Math.random() * (b - a);
 const pick  = arr => arr[Math.floor(Math.random() * arr.length)];
 const log   = (...a) => console.log(`[${new Date().toLocaleTimeString()}]`, ...a);
+// `------- profile #3 -------` between profiles, so a long run's scrollback
+// splits into blocks you can scan. Written raw, not via log() — a timestamp
+// on a separator just adds noise.
+const RULE_W = 64;
+function rule(label) {
+  const mid = ` ${label} `;
+  const left = Math.max(3, Math.floor((RULE_W - mid.length) / 2));
+  const right = Math.max(3, RULE_W - mid.length - left);
+  process.stdout.write(`\n${'-'.repeat(left)}${mid}${'-'.repeat(right)}\n`);
+}
 
 function adb(args, wantOut = false, timeoutMs = 0) {
   const full = TARGET ? ['-s', TARGET, ...args] : args;
@@ -220,7 +229,6 @@ function screenshot(name) {
   } catch (e) { log('  ! screenshot failed:', e.message); return null; }
 }
 
-const EMOJI = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}️‍]/u;
 // Lyrics copy-paste often sneaks in Cyrillic/Greek lookalikes. Android's
 // `input text` maps chars through KeyCharacterMap; unmappable ones return
 // null and this phone NPEs: "Attempt to get length of null array".
@@ -246,48 +254,6 @@ function foldToInputAscii(text) {
   return { text: s, lost };
 }
 
-let _hasAdbKb;
-function hasAdbKeyboard() {
-  if (_hasAdbKb !== undefined) return _hasAdbKb;
-  try { _hasAdbKb = /com\.android\.adbkeyboard/.test(adb(['shell', 'pm', 'list', 'packages', 'com.android.adbkeyboard'], true)); }
-  catch (_) { _hasAdbKb = false; }
-  return _hasAdbKb;
-}
-// Never restore these: ADBKeyboard itself, and the TTS voice IME — Android
-// reports the mic keyboard as "current" whenever a real one isn't selected,
-// and blindly restoring it leaves you stuck typing by voice.
-const IME_ADBKB = 'com.android.adbkeyboard/.AdbIME';
-const IME_GBOARD = 'com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME';
-const IME_BAD = /adbkeyboard|googletts|voiceime|speech/i;
-
-// The keyboard to hand control back to after typing. Explicit KEYBOARD_IME
-// wins; otherwise whatever was really selected, then Gboard, then the first
-// enabled keyboard that isn't a bad one.
-function restoreTargetIme(prev) {
-  if (process.env.KEYBOARD_IME) return process.env.KEYBOARD_IME;
-  if (prev && prev !== 'null' && !IME_BAD.test(prev)) return prev;
-  let enabled = [];
-  try {
-    enabled = adb(['shell', 'ime', 'list', '-s'], true).split('\n')
-      .map(s => s.trim()).filter(s => s && !IME_BAD.test(s));
-  } catch (_) {}
-  if (enabled.includes(IME_GBOARD)) return IME_GBOARD;
-  return enabled[0] || IME_GBOARD;
-}
-
-function typeViaAdbKeyboard(text) {
-  let prev = '';
-  try { prev = adb(['shell', 'settings', 'get', 'secure', 'default_input_method'], true).trim(); } catch (_) {}
-  const back = restoreTargetIme(prev);
-  try {
-    adb(['shell', 'ime', 'enable', IME_ADBKB]);
-    adb(['shell', 'ime', 'set', IME_ADBKB]);
-    adb(['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_B64', '--es', 'msg', Buffer.from(text, 'utf8').toString('base64')]);
-  } finally {
-    // Always hand the keyboard back, even if the broadcast blew up.
-    try { adb(['shell', 'ime', 'set', back]); } catch (_) {}
-  }
-}
 function typeViaInputText(text) {
   // Separate argv (no host-shell quoting). Spaces → %s, literal % → %%.
   // Apostrophes still need \-escaping: `adb shell` joins args into a
@@ -298,17 +264,13 @@ function typeViaInputText(text) {
     adb(['shell', 'input', 'text', piece]);
   }
 }
-// `input text` is ASCII-only; ADBKeyboard can emit Unicode/emoji if installed.
+// `input text` is ASCII-only, so anything outside it is folded away first.
 function typeText(text) {
   const raw = String(text);
-  if (hasAdbKeyboard() && (/[^\x20-\x7E]/.test(raw) || EMOJI.test(raw))) {
-    typeViaAdbKeyboard(raw);
-    return;
-  }
   const { text: clean, lost } = foldToInputAscii(raw);
   if (lost.length) {
     const uniq = [...new Set(lost)].map(c => `U+${c.codePointAt(0).toString(16).toUpperCase()}`);
-    log(`  ! dropped untypeable chars (${uniq.join(' ')}) — install ADBKeyboard for Unicode`);
+    log(`  ! dropped untypeable chars (${uniq.join(' ')}) — \`input text\` is ASCII-only`);
   }
   if (!clean) throw new Error('opener is empty after ASCII sanitise');
   typeViaInputText(clean);
@@ -435,8 +397,10 @@ async function main() {
     : SKIP_MIN + Math.floor(Math.random() * (SKIP_MAX - SKIP_MIN + 1));
   let likesBeforeSkip = nextRun();
   let sent = 0, passed = 0, errors = 0, consecErr = 0;
+  let profileN = 0;
 
   while (sent < NUM) {
+    rule(`profile #${++profileN}`);
     wake();                                        // undo any screen doze from the gap
     // Wait for the profile's like controls (rides out slow-loading cards).
     let hit = await waitFor(/^Like (photo|prompt)$/);

@@ -20,7 +20,6 @@
  *   NO_LOCK=1  leave the screen on at exit (default: put it to sleep / lock)
  *   NO_DIM=1   don't touch screen brightness (default: dim for the run, restore at exit)
  *   DIM_LEVEL  brightness to hold during the run (default 0)
- *   KEYBOARD_IME  IME to restore after typing (default: yours, else Gboard)
  *   LOAD_TIMEOUT  ms to wait for a screen to load, for lag/slow net (default 12000)
  *   SHOTS_DIR  folder for send-sheet screenshots  (default screenshots/)
  *   ADB        path to adb                 (default: auto-detect via $PATH + common spots)
@@ -71,6 +70,16 @@ const SEND_SIZE = [1080, 2400];
 const delay = ms => new Promise(r => setTimeout(r, ms));
 const rand  = (a, b) => a + Math.random() * (b - a);
 const log   = (...a) => console.log(`[${new Date().toLocaleTimeString()}]`, ...a);
+// `------- profile #3 -------` between profiles, so a long run's scrollback
+// splits into blocks you can scan. Written raw, not via log() — a timestamp
+// on a separator just adds noise.
+const RULE_W = 64;
+function rule(label) {
+  const mid = ` ${label} `;
+  const left = Math.max(3, Math.floor((RULE_W - mid.length) / 2));
+  const right = Math.max(3, RULE_W - mid.length - left);
+  process.stdout.write(`\n${'-'.repeat(left)}${mid}${'-'.repeat(right)}\n`);
+}
 
 /* ---- debug journal -------------------------------------------------------
  * One JSONL file per run under logs/ (gitignored — it holds scraped profile
@@ -300,7 +309,6 @@ function captureFirstPhoto(xml, who) {
   return full;
 }
 
-const EMOJI = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}️‍]/u;
 const HOMOGLYPHS = {
   '\u0430': 'a', '\u0435': 'e', '\u043E': 'o', '\u0440': 'p',
   '\u0441': 'c', '\u0443': 'y', '\u0445': 'x', '\u0456': 'i',
@@ -321,48 +329,6 @@ function foldToInputAscii(text) {
   }).join('').replace(/\s+/g, ' ').trim();
   return { text: s, lost };
 }
-let _hasAdbKb;
-function hasAdbKeyboard() {
-  if (_hasAdbKb !== undefined) return _hasAdbKb;
-  try { _hasAdbKb = /com\.android\.adbkeyboard/.test(adb(['shell', 'pm', 'list', 'packages', 'com.android.adbkeyboard'], true)); }
-  catch (_) { _hasAdbKb = false; }
-  return _hasAdbKb;
-}
-// Never restore these: ADBKeyboard itself, and the TTS voice IME — Android
-// reports the mic keyboard as "current" whenever a real one isn't selected,
-// and blindly restoring it leaves you stuck typing by voice.
-const IME_ADBKB = 'com.android.adbkeyboard/.AdbIME';
-const IME_GBOARD = 'com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME';
-const IME_BAD = /adbkeyboard|googletts|voiceime|speech/i;
-
-// The keyboard to hand control back to after typing. Explicit KEYBOARD_IME
-// wins; otherwise whatever was really selected, then Gboard, then the first
-// enabled keyboard that isn't a bad one.
-function restoreTargetIme(prev) {
-  if (process.env.KEYBOARD_IME) return process.env.KEYBOARD_IME;
-  if (prev && prev !== 'null' && !IME_BAD.test(prev)) return prev;
-  let enabled = [];
-  try {
-    enabled = adb(['shell', 'ime', 'list', '-s'], true).split('\n')
-      .map(s => s.trim()).filter(s => s && !IME_BAD.test(s));
-  } catch (_) {}
-  if (enabled.includes(IME_GBOARD)) return IME_GBOARD;
-  return enabled[0] || IME_GBOARD;
-}
-
-function typeViaAdbKeyboard(text) {
-  let prev = '';
-  try { prev = adb(['shell', 'settings', 'get', 'secure', 'default_input_method'], true).trim(); } catch (_) {}
-  const back = restoreTargetIme(prev);
-  try {
-    adb(['shell', 'ime', 'enable', IME_ADBKB]);
-    adb(['shell', 'ime', 'set', IME_ADBKB]);
-    adb(['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_B64', '--es', 'msg', Buffer.from(text, 'utf8').toString('base64')]);
-  } finally {
-    // Always hand the keyboard back, even if the broadcast blew up.
-    try { adb(['shell', 'ime', 'set', back]); } catch (_) {}
-  }
-}
 // `adb shell input text …` is re-parsed by the device's sh, so a bare `;`
 // ends the command and `'` opens a quote. Backslash-escape every shell
 // metachar. Runs after the input-text encoding (%%, %s) so those survive.
@@ -376,18 +342,14 @@ function typeViaInputText(text) {
     adb(['shell', 'input', 'text', encodeForInputText(text.slice(i, i + CHUNK))]);
   }
 }
+// Everything goes through `input text`, which is ASCII-only — the device's own
+// keyboard stays selected the whole run. Non-ASCII is folded away first.
 function typeText(text) {
   const raw = String(text);
-  // ADBKeyboard goes over a base64 broadcast — no shell, no escaping, keeps
-  // Unicode. Prefer it for every line, not just the ones with emoji.
-  if (hasAdbKeyboard()) {
-    typeViaAdbKeyboard(raw);
-    return;
-  }
   const { text: clean, lost } = foldToInputAscii(raw);
   if (lost.length) {
     const uniq = [...new Set(lost)].map(c => `U+${c.codePointAt(0).toString(16).toUpperCase()}`);
-    log(`  ! dropped untypeable chars (${uniq.join(' ')}) — install ADBKeyboard for Unicode`);
+    log(`  ! dropped untypeable chars (${uniq.join(' ')}) — \`input text\` is ASCII-only`);
   }
   if (!clean) throw new Error('opener is empty after ASCII sanitise');
   typeViaInputText(clean);
@@ -893,7 +855,7 @@ async function commentAndSend(line, kind) {
     typeText(line);
   } catch (e) {
     log(`Type failed — ${e.message.split('\n')[0]}`);
-    dbgFail('type-failed', { err: e.message, line, via: hasAdbKeyboard() ? 'adbkeyboard' : 'input-text' });
+    dbgFail('type-failed', { err: e.message, line, via: 'input-text' });
     return false;
   }
   await delay(rand(700, 1200));
@@ -1101,7 +1063,6 @@ function logTiming(t0, T) {
 async function handleOneProfile() {
   const t0 = Date.now();
   const T = {};
-  PROFILE_N++;
   dbg('profile-start');
   const hit = await waitForProfile();
   if (!hit) { dbg('outcome', { result: 'none' }); return 'none'; }
@@ -1213,7 +1174,7 @@ async function main() {
   dbg('run-start', {
     target: TARGET, model: MODEL, num: NUM === Infinity ? null : NUM,
     dryRun: DRY_RUN, noDraft: NODRAFT, minGap: MIN_GAP, maxGap: MAX_GAP,
-    skipMin: SKIP_MIN, skipMax: SKIP_MAX, adbKeyboard: hasAdbKeyboard(),
+    skipMin: SKIP_MIN, skipMax: SKIP_MAX,
   });
   if (DEBUG_LOG) log(`Debug journal → ${path.join(LOG_DIR, `run-${RUN_ID}.jsonl`)}`);
   if (NODRAFT) log('scrape only — one profile, nothing sent');
@@ -1238,6 +1199,7 @@ async function main() {
   }
 
   if (NODRAFT || DRY_RUN) {
+    PROFILE_N++;
     const result = await handleOneProfile();
     if (result === 'none') log('Stopped — no profile on screen.');
     else if (result === 'scraped') log('Done — nothing sent');
@@ -1254,6 +1216,10 @@ async function main() {
   let likesBeforeSkip = nextRun();
   let sent = 0, passed = 0, errors = 0, consecErr = 0;
   while (sent < NUM) {
+    // Counted here rather than in handleOneProfile() so passed profiles get a
+    // number too, and the console #N always matches the journal's `profile`.
+    PROFILE_N++;
+    rule(`profile #${PROFILE_N}`);
     await unlock();
     if (likesBeforeSkip <= 0) {
       const hit = await waitForProfile();

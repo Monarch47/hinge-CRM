@@ -32,7 +32,6 @@ Same knobs as [`hinge-opener.js`](hinge-opener.js):
 | `NO_LOCK` | off | `NO_LOCK=1` leaves the screen on when the run ends |
 | `NO_DIM` | off | `NO_DIM=1` leaves brightness alone. Default: dim for the run, restore however it ends |
 | `DIM_LEVEL` | `0` | Brightness held during the run |
-| `KEYBOARD_IME` | auto | Keyboard to restore after typing. Default: yours, falling back to Gboard |
 | `DRY_RUN` | off | `DRY_RUN=1` types the line on one profile, does not send |
 
 First names only in the log, never uploaded. Voice: [`opener-prompt.md`](opener-prompt.md) · [`persona.md`](persona.md).

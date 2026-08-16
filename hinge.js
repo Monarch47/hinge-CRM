@@ -14,12 +14,12 @@
  *   NO_LOCK=1 node hinge.js            # leave the screen on at exit
  *   NO_DIM=1  node hinge.js            # leave the screen brightness alone
  *
- * The screen is dimmed for the run and put back however it ends. Typing
- * borrows ADBKeyboard and hands the keyboard back to yours (Gboard if it
- * can't tell) — no shell helper needed.
+ * The screen is dimmed for the run and put back however it ends. Typing goes
+ * through `adb shell input text` on your own keyboard — no IME switching, no
+ * shell helper. That path is ASCII-only, so emoji and accents are dropped.
  *
  * Env vars: same as hinge-opener.js (NUM_LIKES, MIN_GAP, MAX_GAP,
- * SKIP_MIN, SKIP_MAX, DRY_RUN, NO_LOCK, NO_DIM, DIM_LEVEL, KEYBOARD_IME,
+ * SKIP_MIN, SKIP_MAX, DRY_RUN, NO_LOCK, NO_DIM, DIM_LEVEL,
  * LOAD_TIMEOUT, SHOTS_DIR, ADB, SERIAL).
  */
 'use strict';
