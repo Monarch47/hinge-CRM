@@ -254,14 +254,18 @@ function foldToInputAscii(text) {
   return { text: s, lost };
 }
 
+// `adb shell input text …` is re-parsed by the device's sh, so a bare `;`
+// ends the command and `'` opens a quote. `>` `<` become redirections.
+// Backslash-escape every shell metachar after the input-text encoding
+// (%%, %s) so those survive. Same encoder as hinge-read.js.
+const SH_META = /[\\;'"&|()<>$`*?~!#[\]{}^\n\t ]/g;
+function encodeForInputText(s) {
+  return s.replace(/%/g, '%%').replace(/ /g, '%s').replace(SH_META, c => '\\' + c);
+}
 function typeViaInputText(text) {
-  // Separate argv (no host-shell quoting). Spaces → %s, literal % → %%.
-  // Apostrophes still need \-escaping: `adb shell` joins args into a
-  // device-side /system/bin/sh command, so a raw ' is "no closing quote".
   const CHUNK = 90;
   for (let i = 0; i < text.length; i += CHUNK) {
-    const piece = text.slice(i, i + CHUNK).replace(/%/g, '%%').replace(/ /g, '%s').replace(/'/g, "\\'");
-    adb(['shell', 'input', 'text', piece]);
+    adb(['shell', 'input', 'text', encodeForInputText(text.slice(i, i + CHUNK))]);
   }
 }
 // `input text` is ASCII-only, so anything outside it is folded away first.
